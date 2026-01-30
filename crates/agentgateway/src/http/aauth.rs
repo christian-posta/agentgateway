@@ -11,6 +11,10 @@ use aauth::{
     headers::SignatureKey,
     signing::{verify_signature, SignatureScheme, resolve_hwk_public_key},
     errors::AAuthError as LibAAuthError,
+    tokens::{
+        decode_jwt_header, decode_jwt_claims_unverified, validate_jwt, extract_cnf_jwk,
+        get_string_claim,
+    },
 };
 
 use crate::client::Client;
@@ -416,7 +420,7 @@ impl AAuth {
             "AAuth: signature-key parsed"
         );
 
-        // Pre-fetch JWKS key if needed
+        // Pre-fetch JWKS key if needed (for jwks scheme)
         let prefetched_key: Option<aauth::keys::ed25519::PublicKey> = 
             if parsed_sig_key.scheme == "jwks" {
                 tracing::debug!("AAuth: scheme=jwks, starting JWKS key resolution");
@@ -473,6 +477,129 @@ impl AAuth {
                 None
             };
 
+        // Pre-validate JWT and extract cnf.jwk key (for jwt scheme)
+        // Also capture JWT claims for later use
+        let (prefetched_jwt_key, jwt_claims): (Option<aauth::keys::ed25519::PublicKey>, Option<(String, Option<String>, serde_json::Map<String, serde_json::Value>)>) = 
+            if parsed_sig_key.scheme == "jwt" {
+                tracing::debug!("AAuth: scheme=jwt, starting JWT validation");
+                
+                // 1. Extract JWT from params
+                let jwt = parsed_sig_key.params.get("jwt")
+                    .ok_or_else(|| {
+                        tracing::info!("AAuth: jwt scheme missing 'jwt' parameter in signature-key");
+                        AAuthPolicyError::VerificationFailed("jwt: missing jwt parameter".to_string())
+                    })?;
+                
+                // 2. Decode header to get kid and typ
+                let header = decode_jwt_header(jwt)
+                    .map_err(|e| {
+                        tracing::info!(error = %e, "AAuth: failed to decode JWT header");
+                        AAuthPolicyError::VerificationFailed(format!("jwt: invalid header: {}", e))
+                    })?;
+                
+                let typ = header.typ.as_deref().unwrap_or("");
+                tracing::debug!(typ = typ, kid = ?header.kid, "AAuth: JWT header decoded");
+                
+                // 3. Decode claims (unverified) to get issuer
+                let unverified_claims = decode_jwt_claims_unverified(jwt)
+                    .map_err(|e| {
+                        tracing::info!(error = %e, "AAuth: failed to decode JWT claims");
+                        AAuthPolicyError::VerificationFailed(format!("jwt: invalid claims: {}", e))
+                    })?;
+                
+                let issuer = get_string_claim(&unverified_claims, "iss")
+                    .ok_or_else(|| {
+                        tracing::info!("AAuth: JWT missing 'iss' claim");
+                        AAuthPolicyError::VerificationFailed("jwt: missing iss claim".to_string())
+                    })?;
+                
+                let kid = header.kid.as_ref()
+                    .ok_or_else(|| {
+                        tracing::info!("AAuth: JWT missing 'kid' in header");
+                        AAuthPolicyError::VerificationFailed("jwt: missing kid in header".to_string())
+                    })?;
+                
+                // 4. Fetch JWKS from issuer's well-known endpoint
+                // - agent+jwt tokens: issuer is agent server, use .well-known/aauth-agent
+                // - auth+jwt tokens: issuer is auth server (OIDC), use .well-known/openid-configuration
+                let well_known = match typ {
+                    "agent+jwt" | "at+jwt" => "aauth-agent",
+                    "auth+jwt" => "openid-configuration",
+                    _ => "aauth-agent", // default to aauth-agent for unknown types
+                };
+                
+                tracing::debug!(issuer = %issuer, kid = %kid, well_known = well_known, "AAuth: fetching JWKS for JWT validation");
+                
+                let signing_jwk = self.get_jwks_key(&issuer, kid, Some(well_known)).await?;
+                
+                tracing::debug!(
+                    issuer = %issuer,
+                    kid = %kid,
+                    jwk_kty = %signing_jwk.kty,
+                    "AAuth: JWKS key fetched for JWT validation"
+                );
+                
+                // 5. Validate JWT signature
+                let validated_claims = validate_jwt(jwt, &signing_jwk, None)
+                    .map_err(|e| {
+                        tracing::info!(error = %e, "AAuth: JWT signature validation failed");
+                        AAuthPolicyError::VerificationFailed(format!("jwt: validation failed: {}", e))
+                    })?;
+                
+                tracing::debug!("AAuth: JWT signature validated successfully");
+                
+                // 6. Extract cnf.jwk
+                let cnf_jwk = extract_cnf_jwk(&validated_claims)
+                    .map_err(|e| {
+                        tracing::info!(error = %e, "AAuth: failed to extract cnf.jwk from JWT");
+                        AAuthPolicyError::VerificationFailed(format!("jwt: missing cnf.jwk: {}", e))
+                    })?;
+                
+                tracing::debug!(
+                    cnf_jwk_kty = %cnf_jwk.kty,
+                    cnf_jwk_crv = ?cnf_jwk.crv,
+                    "AAuth: cnf.jwk extracted from JWT"
+                );
+                
+                // 7. Convert cnf.jwk to Ed25519 public key
+                let pubkey = cnf_jwk.to_ed25519_public_key()
+                    .map_err(|e| {
+                        tracing::info!(error = %e, "AAuth: failed to convert cnf.jwk to Ed25519 key");
+                        AAuthPolicyError::VerificationFailed(format!("jwt: invalid cnf.jwk: {}", e))
+                    })?;
+                
+                // 8. Extract agent identity based on token type
+                let (agent_id, agent_delegate) = match typ {
+                    "agent+jwt" | "at+jwt" => {
+                        // agent+jwt: iss is agent identity, sub is delegate
+                        let agent = issuer.clone();
+                        let delegate = get_string_claim(&validated_claims, "sub");
+                        (agent, delegate)
+                    }
+                    "auth+jwt" => {
+                        // auth+jwt: agent claim is agent identity, sub is user
+                        let agent = get_string_claim(&validated_claims, "agent")
+                            .unwrap_or_else(|| issuer.clone());
+                        let user = get_string_claim(&validated_claims, "sub");
+                        (agent, user)
+                    }
+                    _ => {
+                        // Unknown type, use issuer as agent
+                        (issuer.clone(), None)
+                    }
+                };
+                
+                tracing::debug!(
+                    agent_id = %agent_id,
+                    agent_delegate = ?agent_delegate,
+                    "AAuth: JWT successfully validated, cnf.jwk extracted"
+                );
+                
+                (Some(pubkey), Some((agent_id, agent_delegate, validated_claims)))
+            } else {
+                (None, None)
+            };
+
         // Convert headers to HashMap for verification
         let mut header_map = HashMap::new();
         for (name, value) in req.headers() {
@@ -499,8 +626,9 @@ impl AAuth {
             None
         };
 
-        // Resolver that handles both hwk and jwks
+        // Resolver that handles hwk, jwks, and jwt schemes
         let prefetched_key_clone = prefetched_key.clone();
+        let prefetched_jwt_key_clone = prefetched_jwt_key.clone();
         let resolver = move |sig_key: &SignatureKey| -> Result<aauth::keys::ed25519::PublicKey, LibAAuthError> {
             tracing::debug!(scheme = %sig_key.scheme, "AAuth resolver: resolving public key");
             
@@ -518,6 +646,14 @@ impl AAuth {
                         .ok_or_else(|| {
                             tracing::debug!("AAuth resolver: jwks key was not pre-fetched");
                             LibAAuthError::JwksFetchError("key not pre-fetched".to_string())
+                        })
+                },
+                "jwt" => {
+                    tracing::debug!("AAuth resolver: using jwt scheme");
+                    prefetched_jwt_key_clone.clone()
+                        .ok_or_else(|| {
+                            tracing::debug!("AAuth resolver: jwt key was not pre-validated");
+                            LibAAuthError::JwtValidationError("jwt not pre-validated".to_string())
                         })
                 },
                 s => {
@@ -589,17 +725,29 @@ impl AAuth {
         
         tracing::debug!("AAuth: verification successful, scheme meets requirements");
 
-        // Store claims
+        // Store claims - merge verification result with JWT claims if available
         let mut claims_map = Map::new();
         claims_map.insert("scheme".to_string(), Value::String(format!("{:?}", verify_result.scheme)));
-        if let Some(agent) = verify_result.agent_id {
-            claims_map.insert("agent".to_string(), Value::String(agent));
-        }
-        if let Some(delegate) = verify_result.agent_delegate {
-            claims_map.insert("agent_delegate".to_string(), Value::String(delegate));
-        }
-        if let Some(jwt_claims) = verify_result.claims {
-            claims_map.insert("jwt_claims".to_string(), Value::Object(jwt_claims));
+        
+        // For JWT scheme, use the pre-validated JWT claims
+        // For other schemes, use the verify_result
+        if let Some((agent_id, agent_delegate, validated_jwt_claims)) = jwt_claims {
+            claims_map.insert("agent".to_string(), Value::String(agent_id));
+            if let Some(delegate) = agent_delegate {
+                claims_map.insert("agent_delegate".to_string(), Value::String(delegate));
+            }
+            claims_map.insert("jwt_claims".to_string(), Value::Object(validated_jwt_claims));
+        } else {
+            // Non-JWT scheme - use verify_result
+            if let Some(agent) = verify_result.agent_id {
+                claims_map.insert("agent".to_string(), Value::String(agent));
+            }
+            if let Some(delegate) = verify_result.agent_delegate {
+                claims_map.insert("agent_delegate".to_string(), Value::String(delegate));
+            }
+            if let Some(jwt_claims) = verify_result.claims {
+                claims_map.insert("jwt_claims".to_string(), Value::Object(jwt_claims));
+            }
         }
         claims_map.insert("thumbprint".to_string(), Value::String(String::new())); // TODO: extract from signature key
         

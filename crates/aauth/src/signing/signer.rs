@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use crate::headers::{build_signature_key_hwk, build_signature_key_jwks, build_signature_key_jwt, build_signature_input, build_signature, SignatureParams};
-use crate::keys::ed25519::{sign, PublicKey, PrivateKey, public_key_to_base64url};
+use crate::keys::ed25519::{sign, PrivateKey, public_key_to_base64url};
 use crate::keys::jwk::JWK;
 use crate::digest::calculate_content_digest;
 use crate::signing::signature_base::build_signature_base;

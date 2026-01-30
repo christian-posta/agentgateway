@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use crate::headers::{parse_signature_key, parse_signature_input, parse_signature, SignatureKey};
 use crate::keys::ed25519::{verify, PublicKey, public_key_from_bytes};
-use crate::keys::jwk::JWK;
 use crate::signing::signature_base::build_signature_base;
 use crate::errors::AAuthError;
 
@@ -50,7 +49,7 @@ pub async fn verify_signature(
     method: &str,
     url: &str,
     headers: &HashMap<String, String>,
-    body: Option<&[u8]>,
+    _body: Option<&[u8]>,
     timestamp_tolerance: u64,
     public_key_resolver: &(dyn Fn(&SignatureKey) -> Result<PublicKey, AAuthError> + Send + Sync),
     authority_override: Option<&str>,
