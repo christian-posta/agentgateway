@@ -181,6 +181,7 @@ pub struct RoutePolicies {
 	pub jwt: Option<http::jwt::Jwt>,
 	pub basic_auth: Option<http::basicauth::BasicAuthentication>,
 	pub api_key: Option<http::apikey::APIKeyAuthentication>,
+	pub aauth: Option<http::aauth::AAuth>,
 	pub ext_authz: Option<ext_authz::ExtAuthz>,
 	pub ext_proc: Option<ext_proc::ExtProc>,
 	pub transformation: Option<http::transformation_cel::Transformation>,
@@ -412,6 +413,9 @@ impl Store {
 				},
 				TrafficPolicy::APIKey(p) => {
 					pol.api_key.get_or_insert_with(|| p.clone());
+				},
+				TrafficPolicy::AAuth(p) => {
+					pol.aauth.get_or_insert_with(|| p.clone());
 				},
 				TrafficPolicy::Transformation(p) => {
 					pol.transformation.get_or_insert_with(|| p.clone());

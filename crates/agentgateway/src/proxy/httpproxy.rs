@@ -23,7 +23,7 @@ use crate::http::ext_proc::ExtProcRequest;
 use crate::http::filters::{AutoHostname, BackendRequestTimeout};
 use crate::http::transformation_cel::Transformation;
 use crate::http::{
-	Authority, HeaderName, HeaderValue, PolicyResponse, Request, Response, Scheme, StatusCode, Uri,
+	Authority, Body, HeaderName, HeaderValue, PolicyResponse, Request, Response, Scheme, StatusCode, Uri,
 	auth, filters, merge_in_headers, retry,
 };
 use crate::llm::{InputFormat, LLMRequest, RequestResult, RouteType};
@@ -70,6 +70,30 @@ async fn apply_request_policies(
 	req: &mut Request,
 	response_policies: &mut ResponsePolicies,
 ) -> Result<(), ProxyResponse> {
+	// AAuth should run early, before other auth policies
+	if let Some(aauth) = &policies.aauth {
+		match aauth.apply(Some(log), req).await {
+			Ok(()) => {},
+			Err(crate::http::aauth::AAuthPolicyError::InsufficientLevel) => {
+				// Return challenge response
+				let challenge = aauth.build_challenge_response(None);
+				use ::http::Response as HttpResponse;
+				let mut resp = HttpResponse::builder()
+					.status(StatusCode::UNAUTHORIZED)
+					.body(Body::empty())
+					.map_err(|_| ProxyError::ProcessingString("failed to build response".to_string()))?;
+				*resp.status_mut() = StatusCode::UNAUTHORIZED;
+				resp.headers_mut().insert(
+					HeaderName::from_static("agent-auth"),
+					HeaderValue::from_str(&challenge).unwrap(),
+				);
+				return Err(ProxyResponse::DirectResponse(Box::new(resp)));
+			}
+			Err(e) => {
+				return Err(ProxyResponse::from(ProxyError::AAuthFailure(e.to_string())));
+			}
+		}
+	}
 	if let Some(j) = &policies.jwt {
 		j.apply(Some(log), req)
 			.await

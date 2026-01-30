@@ -632,6 +632,9 @@ struct LocalGatewayPolicy {
 	/// Authenticate incoming JWT requests.
 	#[serde(default)]
 	jwt_auth: Option<crate::http::jwt::LocalJwtConfig>,
+	/// Authenticate incoming requests using AAuth (HTTP Message Signing).
+	#[serde(default)]
+	aauth: Option<crate::http::aauth::LocalAAuthConfig>,
 	/// Authenticate incoming requests by calling an external authorization server.
 	#[serde(default)]
 	ext_authz: Option<crate::http::ext_authz::ExtAuthz>,
@@ -658,6 +661,7 @@ impl From<LocalGatewayPolicy> for FilterOrPolicy {
 	fn from(val: LocalGatewayPolicy) -> Self {
 		let LocalGatewayPolicy {
 			jwt_auth,
+			aauth,
 			ext_authz,
 			ext_proc,
 			transformations,
@@ -666,6 +670,7 @@ impl From<LocalGatewayPolicy> for FilterOrPolicy {
 		} = val;
 		FilterOrPolicy {
 			jwt_auth,
+			aauth,
 			ext_authz,
 			ext_proc,
 			transformations,
@@ -867,6 +872,9 @@ struct FilterOrPolicy {
 	/// Authenticate incoming JWT requests.
 	#[serde(default)]
 	jwt_auth: Option<crate::http::jwt::LocalJwtConfig>,
+	/// Authenticate incoming requests using AAuth (HTTP Message Signing).
+	#[serde(default)]
+	aauth: Option<crate::http::aauth::LocalAAuthConfig>,
 	/// Authenticate incoming requests using Basic Authentication with htpasswd.
 	#[serde(default)]
 	basic_auth: Option<crate::http::basicauth::LocalBasicAuth>,
@@ -1298,6 +1306,7 @@ async fn split_policies(client: Client, pol: FilterOrPolicy) -> Result<ResolvedP
 		local_rate_limit,
 		remote_rate_limit,
 		jwt_auth,
+		aauth,
 		basic_auth,
 		api_key,
 		transformations,
@@ -1358,6 +1367,9 @@ async fn split_policies(client: Client, pol: FilterOrPolicy) -> Result<ResolvedP
 	}
 	if let Some(p) = jwt_auth {
 		route_policies.push(TrafficPolicy::JwtAuth(p.try_into(client.clone()).await?));
+	}
+	if let Some(p) = aauth {
+		route_policies.push(TrafficPolicy::AAuth(p.try_into(client.clone()).await?));
 	}
 	if let Some(p) = basic_auth {
 		route_policies.push(TrafficPolicy::BasicAuth(p.try_into()?));

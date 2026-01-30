@@ -1,0 +1,34 @@
+# AAuth (Agent-to-Agent Authentication) Example Configuration
+#
+# This example demonstrates how to configure AAuth policy for HTTP Message Signing
+# verification with progressive authentication challenges.
+
+gateways:
+  - name: default
+    listeners:
+      - port: 8080
+        protocol: HTTP
+        routes:
+          - name: aauth-example
+            match:
+              - path:
+                  type: Prefix
+                  value: /
+            backends:
+              - name: echo
+                type: static
+                endpoints:
+                  - address: 127.0.0.1:8081
+            policies:
+              # AAuth policy configuration
+              - aauth:
+                  # Mode: strict (require signature), optional (validate if present), permissive (never reject)
+                  mode: strict
+                  # Required scheme: hwk (pseudonymous), jwks (identified), jwt (authorized)
+                  requiredScheme: jwks
+                  # Timestamp tolerance in seconds (default: 60)
+                  timestampTolerance: 60
+                  # Challenge configuration for jwt scheme
+                  challenge:
+                    authServer: "https://auth.example.com"
+                    # TODO: Add resource token issuer configuration

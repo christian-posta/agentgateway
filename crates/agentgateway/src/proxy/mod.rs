@@ -52,6 +52,7 @@ impl ProxyResponse {
 			ProxyError::McpJwtAuthenticationFailure(_, _) => ProxyResponseReason::JwtAuth,
 			ProxyError::BasicAuthenticationFailure(_) => ProxyResponseReason::BasicAuth,
 			ProxyError::APIKeyAuthenticationFailure(_) => ProxyResponseReason::APIKeyAuth,
+			ProxyError::AAuthFailure(_) => ProxyResponseReason::JwtAuth,
 			ProxyError::ExternalAuthorizationFailed(_) => ProxyResponseReason::ExtAuth,
 			ProxyError::MCP(_) => ProxyResponseReason::MCP,
 			ProxyError::AuthorizationFailed | ProxyError::CsrfValidationFailed => {
@@ -146,6 +147,8 @@ pub enum ProxyError {
 	BasicAuthenticationFailure(http::basicauth::Error),
 	#[error("api key authentication failure: {0}")]
 	APIKeyAuthenticationFailure(http::apikey::Error),
+	#[error("AAuth failure: {0}")]
+	AAuthFailure(String),
 	#[error("CSRF validation failed")]
 	CsrfValidationFailed,
 	#[error("service not found")]
@@ -230,6 +233,7 @@ impl ProxyError {
 			ProxyError::JwtAuthenticationFailure(_) => StatusCode::UNAUTHORIZED,
 			ProxyError::BasicAuthenticationFailure(_) => StatusCode::UNAUTHORIZED,
 			ProxyError::APIKeyAuthenticationFailure(_) => StatusCode::UNAUTHORIZED,
+			ProxyError::AAuthFailure(_) => StatusCode::UNAUTHORIZED,
 			ProxyError::McpJwtAuthenticationFailure(_, _) => StatusCode::UNAUTHORIZED,
 			ProxyError::AuthorizationFailed => StatusCode::FORBIDDEN,
 			ProxyError::ExternalAuthorizationFailed(status) => status.unwrap_or(StatusCode::FORBIDDEN),

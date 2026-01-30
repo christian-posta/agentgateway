@@ -7,6 +7,7 @@ wiremock = { git = "https://github.com/howardjohn/wiremock-rs", rev = "e55f5b960
 resolver = "2"
 members = [
     "crates/a2a-sdk",
+    "crates/aauth",
     "crates/agentgateway",
     "crates/agentgateway-app",
     "crates/cel-fork/cel",
