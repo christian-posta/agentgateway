@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use crate::errors::AAuthError;
+use crate::keys::ed25519::{PublicKey, public_key_from_bytes};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct JWK {
@@ -73,6 +74,19 @@ impl JWK {
         }
 
         serde_json::to_string(&Value::Object(map)).map_err(AAuthError::from)
+    }
+
+    /// Convert OKP/Ed25519 JWK to PublicKey
+    pub fn to_ed25519_public_key(&self) -> Result<PublicKey, AAuthError> {
+        if self.kty != "OKP" {
+            return Err(AAuthError::InvalidKey(format!("expected OKP, got {}", self.kty)));
+        }
+        let crv = self.crv.as_ref().ok_or_else(|| AAuthError::InvalidKey("missing crv".to_string()))?;
+        if crv != "Ed25519" {
+            return Err(AAuthError::InvalidKey(format!("expected Ed25519, got {}", crv)));
+        }
+        let x = self.x.as_ref().ok_or_else(|| AAuthError::InvalidKey("missing x".to_string()))?;
+        public_key_from_bytes(x)
     }
 }
 

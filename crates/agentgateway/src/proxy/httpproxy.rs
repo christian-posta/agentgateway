@@ -69,10 +69,11 @@ async fn apply_request_policies(
 	log: &mut RequestLog,
 	req: &mut Request,
 	response_policies: &mut ResponsePolicies,
+	verification_authority: Option<&str>,
 ) -> Result<(), ProxyResponse> {
 	// AAuth should run early, before other auth policies
 	if let Some(aauth) = &policies.aauth {
-		match aauth.apply(Some(log), req).await {
+		match aauth.apply(Some(log), req, verification_authority).await {
 			Ok(()) => {},
 			Err(crate::http::aauth::AAuthPolicyError::InsufficientLevel) => {
 				// Return challenge response
@@ -595,6 +596,7 @@ impl HTTPProxy {
 		.await
 		.snapshot_on_err(log, &mut req)?;
 
+		let listener_port = bind.address.port();
 		Self::detect_misdirected(log, bind, &req, &selected_listener).snapshot_on_err(log, &mut req)?;
 
 		let (selected_route, path_match) = http::route::select_best_route(
@@ -649,12 +651,18 @@ impl HTTPProxy {
 		response_policies.ext_proc = maybe_ext_proc;
 		response_policies.gateway_ext_proc = maybe_gateway_ext_proc;
 
+		// Use route hostname (request host) and listener port for AAuth @authority verification
+		let verification_authority = {
+			let host_no_port = host.split(':').next().unwrap_or(&host);
+			Some(format!("{}:{}", host_no_port, listener_port))
+		};
 		apply_request_policies(
 			&route_policies,
 			self.policy_client(),
 			log,
 			&mut req,
 			response_policies,
+			verification_authority.as_deref(),
 		)
 		.await
 		.snapshot_on_err(log, &mut req)?;

@@ -1,8 +1,9 @@
-use crate::encoding::base64_decode;
+use crate::encoding::{base64_decode, base64url_decode};
 use crate::errors::AAuthError;
 
 /// Parse Signature header: label=:base64signature:
 /// Returns (label, signature_bytes)
+/// Accepts both standard base64 and base64url (RFC 4648); many clients send base64url.
 pub fn parse_signature(header: &str) -> Result<(String, Vec<u8>), AAuthError> {
     let parts: Vec<&str> = header.splitn(2, '=').collect();
     if parts.len() != 2 {
@@ -18,7 +19,8 @@ pub fn parse_signature(header: &str) -> Result<(String, Vec<u8>), AAuthError> {
     }
 
     let base64_value = &value[1..value.len() - 1];
-    let signature_bytes = base64_decode(base64_value)?;
+    // Try standard base64 first (RFC 9421), then base64url (many clients use _ and -)
+    let signature_bytes = base64_decode(base64_value).or_else(|_| base64url_decode(base64_value))?;
 
     Ok((label, signature_bytes))
 }

@@ -6,6 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+tracing = "0.1"
 ed25519-dalek = "2"
 sha2 = "0.10"
 base64 = "0.22"
