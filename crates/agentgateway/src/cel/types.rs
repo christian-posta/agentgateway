@@ -21,6 +21,7 @@ use serde_json::json;
 use crate::cel::{Error, Expression, ROOT_CONTEXT};
 use crate::http::ext_authz::ExtAuthzDynamicMetadata;
 use crate::http::ext_proc::ExtProcDynamicMetadata;
+use crate::http::aauth::AAuthClaims;
 use crate::http::{apikey, basicauth, jwt};
 use crate::llm::{LLMInfo, LLMRequest};
 use crate::mcp::{ResourceId, ResourceType};
@@ -66,6 +67,10 @@ pub struct Executor<'a> {
 
 	#[dynamic(skip_serializing_if = "is_extension_or_direct_none")]
 	pub extproc: ExtensionOrDirect<'a, ExtProcDynamicMetadata>,
+
+	/// AAuth (HTTP message signing) claims: scheme, agent, agent_delegate, jwt_claims. Present when AAuth policy verified the request.
+	#[dynamic(skip_serializing_if = "is_extension_or_direct_none")]
+	pub aauth: ExtensionOrDirect<'a, AAuthClaims>,
 }
 
 fn is_extension_or_direct_none<T: Send + Sync + 'static>(e: &ExtensionOrDirect<T>) -> bool {
@@ -219,6 +224,7 @@ impl<'a> Executor<'a> {
 		self.extauthz = ExtensionOrDirect::Extension(ext);
 		self.backend = ExtensionOrDirect::Extension(ext);
 		self.source = ExtensionOrDirect::Extension(ext);
+		self.aauth = ExtensionOrDirect::Extension(ext);
 	}
 	fn set_request_snapshot(&mut self, req: &'a RequestSnapshot) {
 		self.request = Some(req.into());
@@ -230,6 +236,7 @@ impl<'a> Executor<'a> {
 		// self.extproc = ExtensionOrDirect::Direct(req.basic_auth.as_ref());
 		self.llm = ExtensionOrDirect::Direct(req.llm.as_ref());
 		self.source = ExtensionOrDirect::Direct(req.source.as_ref());
+		self.aauth = ExtensionOrDirect::Direct(req.aauth.as_ref());
 	}
 	fn set_response(&mut self, resp: &'a crate::http::Response) {
 		self.response = Some(resp.into());
@@ -354,6 +361,7 @@ pub fn snapshot_request(req: &mut crate::http::Request) -> RequestSnapshot {
 		extproc: req.extensions_mut().remove::<ExtProcDynamicMetadata>(),
 		llm: req.extensions_mut().remove::<LLMContext>(),
 		start_time: req.extensions_mut().remove::<RequestStartTime>(),
+		aauth: req.extensions_mut().remove::<AAuthClaims>(),
 	}
 }
 
@@ -404,6 +412,9 @@ pub struct RequestSnapshot {
 	pub extproc: Option<ExtProcDynamicMetadata>,
 
 	pub llm: Option<LLMContext>,
+
+	/// AAuth (HTTP message signing) claims. Present when AAuth policy verified the request.
+	pub aauth: Option<AAuthClaims>,
 }
 
 #[derive(Debug, Clone, Serialize, cel::DynamicType)]
@@ -906,6 +917,10 @@ pub struct ExecutorSerde {
 	/// `extproc` contains dynamic metadata from ext_proc filters
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub extproc: Option<ExtProcDynamicMetadata>,
+
+	/// `aauth` contains AAuth (HTTP message signing) claims: scheme, agent, agent_delegate, jwt_claims.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub aauth: Option<AAuthClaims>,
 }
 
 impl ExecutorSerde {
@@ -975,6 +990,7 @@ impl ExecutorSerde {
 		exec.backend = ExtensionOrDirect::Direct(self.backend.as_ref());
 		exec.extauthz = ExtensionOrDirect::Direct(self.extauthz.as_ref());
 		exec.extproc = ExtensionOrDirect::Direct(self.extproc.as_ref());
+		exec.aauth = ExtensionOrDirect::Direct(self.aauth.as_ref());
 		exec.mcp = self.mcp.as_ref();
 
 		exec
@@ -1067,6 +1083,13 @@ pub fn full_example_executor() -> ExecutorSerde {
 		}),
 		extauthz: Some(ExtAuthzDynamicMetadata::default()),
 		extproc: Some(ExtProcDynamicMetadata::default()),
+		aauth: Some(AAuthClaims {
+			inner: serde_json::Map::from_iter([
+				("scheme".to_string(), json!("Jwks")),
+				("agent".to_string(), json!("https://agent.example.com")),
+				("agent_delegate".to_string(), json!("delegate-1")),
+			]),
+		}),
 	}
 }
 

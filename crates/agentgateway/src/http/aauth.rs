@@ -208,7 +208,7 @@ pub enum Mode {
     Permissive,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[cfg_attr(feature = "schema", schemars(with = "Map<String, Value>"))]
 pub struct AAuthClaims {
