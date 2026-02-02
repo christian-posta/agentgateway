@@ -254,7 +254,7 @@ jobs:
           docker buildx imagetools inspect ${{ env.REGISTRY_IMAGE }}:${{ steps.meta.outputs.version }}-musl
 
   build:
-    if: ${{ github.event_name == 'push' || ! github.event.inputs.skip_gh_release }}
+    if: ${{ github.event_name == 'push' || github.event.inputs.skip_gh_release != 'true' }}
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -317,7 +317,7 @@ jobs:
           target/${{ matrix.target }}/release/agentgateway.exe
 
   release:
-    if: ${{ github.event_name == 'push' || ! github.event.inputs.skip_gh_release }}
+    if: ${{ github.event_name == 'push' || github.event.inputs.skip_gh_release != 'true' }}
     needs:
     - push-image
     - musl-push-image
