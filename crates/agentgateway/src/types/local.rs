@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::agentcore;
 use crate::client::Client;
 use crate::http::auth::BackendAuth;
 use crate::http::backendtls::LocalBackendTLS;
@@ -486,7 +487,16 @@ pub enum LocalBackend {
 	MCP(LocalMcpBackend),
 	#[serde(rename = "ai")]
 	AI(LocalAIBackend),
+	#[serde(rename = "agentCore")]
+	AgentCore(LocalAgentCoreBackend),
 	Invalid,
+}
+
+#[apply(schema_de!)]
+pub struct LocalAgentCoreBackend {
+	pub agent_runtime_arn: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub qualifier: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -683,6 +693,11 @@ impl LocalBackend {
 			LocalBackend::AI(tgt) => {
 				let be = tgt.clone().translate()?;
 				vec![Backend::AI(name, be).into()]
+			},
+			LocalBackend::AgentCore(ac) => {
+				let config =
+					agentcore::AgentCoreConfig::new(ac.agent_runtime_arn.clone(), ac.qualifier.clone())?;
+				vec![Backend::AgentCore(name, config).into()]
 			},
 			LocalBackend::Invalid => vec![Backend::Invalid.into()],
 		})

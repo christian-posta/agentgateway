@@ -20,6 +20,7 @@ use crate::store::Stores;
 use crate::types::discovery::Identity;
 
 pub mod a2a;
+pub mod agentcore;
 pub mod app;
 pub mod cel;
 pub mod client;
