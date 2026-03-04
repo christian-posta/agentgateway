@@ -489,6 +489,20 @@ impl Client {
 		let target_name = target.to_string();
 		let key = PoolKey(target, dest, transport, version);
 		trace!(?req, ?key, "sending request");
+		// Log AgentCore runtime headers when present (from policies.transformations.request.set) for verification
+		const AGENTCORE_USER_ID: &str = "x-amzn-bedrock-agentcore-runtime-user-id";
+		const AGENTCORE_CUSTOM_USER_ID: &str = "x-amzn-bedrock-agentcore-runtime-custom-user-id";
+		let h_user_id = req.headers().get(AGENTCORE_USER_ID);
+		let h_custom_user_id = req.headers().get(AGENTCORE_CUSTOM_USER_ID);
+		if h_user_id.is_some() || h_custom_user_id.is_some() {
+			event!(
+				target: "upstream request",
+				tracing::Level::DEBUG,
+				user_id = ?h_user_id,
+				custom_user_id = ?h_custom_user_id,
+				"AgentCore runtime headers on outgoing request"
+			);
+		}
 		req.extensions_mut().insert(key);
 		let method = req.method().clone();
 		let uri = req.uri().clone();
