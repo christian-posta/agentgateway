@@ -5,11 +5,11 @@ use std::time::Instant;
 
 use agent_core::strng::Strng;
 use bytes::Bytes;
+use cel::Value;
 use cel::common::ast::OptimizedExpr;
 use cel::context::VariableResolver;
 use cel::objects::BytesValue;
 use cel::types::dynamic::DynamicType;
-use cel::Value;
 use http::{Extensions, HeaderMap, Method, Uri, Version};
 use prometheus_client::encoding::EncodeLabelValue;
 #[cfg(feature = "schema")]
@@ -1085,7 +1085,7 @@ pub fn full_example_executor() -> ExecutorSerde {
 		extproc: Some(ExtProcDynamicMetadata::default()),
 		aauth: Some(AAuthClaims {
 			inner: serde_json::Map::from_iter([
-				("scheme".to_string(), json!("Jwks")),
+				("scheme".to_string(), json!("jwks_uri")),
 				("agent".to_string(), json!("https://agent.example.com")),
 				("agent_delegate".to_string(), json!("delegate-1")),
 			]),

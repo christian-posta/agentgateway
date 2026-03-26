@@ -28,6 +28,10 @@ pub struct AgentTokenResult {
 	pub claims: Map<String, Value>,
 }
 
+fn is_https_url(value: &str) -> bool {
+	value.starts_with("https://")
+}
+
 /// Validate agent+jwt token per AAuth spec Section 5
 ///
 /// This function validates the JWT signature using the provided signing JWK (from the agent's JWKS).
@@ -81,6 +85,11 @@ pub fn validate_agent_token(
 	let agent_id = get_string_claim(&claims, "iss").ok_or_else(|| {
 		AAuthError::JwtValidationError("missing iss claim in agent token".to_string())
 	})?;
+	if !is_https_url(&agent_id) {
+		return Err(AAuthError::JwtValidationError(
+			"agent token iss must be an https URL".to_string(),
+		));
+	}
 
 	let delegate_id = get_string_claim(&claims, "sub");
 

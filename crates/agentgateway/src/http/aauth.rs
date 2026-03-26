@@ -4,18 +4,16 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ::cel::types::dynamic::DynamicType;
+use aauth::keys::{jwk::JWK, jwk_thumbprint::calculate_jwk_thumbprint};
+use aauth::{
+	errors::AAuthError as LibAAuthError,
+	headers::SignatureKey,
+	signing::{SignatureScheme, resolve_hwk_public_key, verify_signature},
+	tokens::{decode_jwt_claims_unverified, decode_jwt_header, get_string_claim},
+};
 use parking_lot::RwLock;
 use serde::Deserialize;
 use serde_json::{Map, Value};
-use aauth::{
-    headers::SignatureKey,
-    signing::{verify_signature, SignatureScheme, resolve_hwk_public_key},
-    errors::AAuthError as LibAAuthError,
-    tokens::{
-        decode_jwt_header, decode_jwt_claims_unverified,
-        get_string_claim,
-    },
-};
 
 use crate::client::Client;
 use crate::http::{Body, Request};
@@ -29,180 +27,192 @@ mod tests;
 /// Cached JWKS keyed by agent id
 #[derive(Clone, Default)]
 pub struct JwksCache {
-    inner: Arc<RwLock<HashMap<String, CachedJwks>>>,
+	inner: Arc<RwLock<HashMap<String, CachedJwks>>>,
 }
 
 struct CachedJwks {
-    keys: HashMap<String, aauth::keys::jwk::JWK>,  // kid -> JWK
-    fetched_at: Instant,
+	keys: HashMap<String, aauth::keys::jwk::JWK>, // kid -> JWK
+	fetched_at: Instant,
 }
 
 impl JwksCache {
-    const TTL: Duration = Duration::from_secs(300); // 5 minutes
+	const TTL: Duration = Duration::from_secs(300); // 5 minutes
 
-    /// Get a key from cache by agent id and kid
-    pub fn get(&self, id: &str, kid: &str) -> Option<aauth::keys::jwk::JWK> {
-        let cache = self.inner.read();
-        let cached = cache.get(id)?;
-        
-        // Check if cache entry is still valid
-        if cached.fetched_at.elapsed() > Self::TTL {
-            return None;
-        }
-        
-        cached.keys.get(kid).cloned()
-    }
+	/// Get a key from cache by agent id and kid
+	pub fn get(&self, id: &str, kid: &str) -> Option<aauth::keys::jwk::JWK> {
+		let cache = self.inner.read();
+		let cached = cache.get(id)?;
 
-    /// Insert JWKS keys into cache for an agent id
-    pub fn insert(&self, id: &str, keys: &[aauth::keys::jwk::JWK]) {
-        let mut cache = self.inner.write();
-        let mut key_map = HashMap::new();
-        
-        for jwk in keys {
-            if let Some(kid) = &jwk.kid {
-                key_map.insert(kid.clone(), jwk.clone());
-            }
-        }
-        
-        cache.insert(id.to_string(), CachedJwks {
-            keys: key_map,
-            fetched_at: Instant::now(),
-        });
-    }
+		// Check if cache entry is still valid
+		if cached.fetched_at.elapsed() > Self::TTL {
+			return None;
+		}
+
+		cached.keys.get(kid).cloned()
+	}
+
+	/// Insert JWKS keys into cache for an agent id
+	pub fn insert(&self, id: &str, keys: &[aauth::keys::jwk::JWK]) {
+		let mut cache = self.inner.write();
+		let mut key_map = HashMap::new();
+
+		for jwk in keys {
+			if let Some(kid) = &jwk.kid {
+				key_map.insert(kid.clone(), jwk.clone());
+			}
+		}
+
+		cache.insert(
+			id.to_string(),
+			CachedJwks {
+				keys: key_map,
+				fetched_at: Instant::now(),
+			},
+		);
+	}
 }
 
 /// Agent metadata response from /.well-known/aauth-agent
 #[derive(Deserialize)]
 struct AgentMetadata {
-    jwks_uri: String,
-    // agent: String,  // optional
+	jwks_uri: String,
+	// agent: String,  // optional
 }
 
 /// JWKS response
 #[derive(Deserialize)]
 struct JwksResponse {
-    keys: Vec<aauth::keys::jwk::JWK>,
+	keys: Vec<aauth::keys::jwk::JWK>,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum AAuthPolicyError {
-    #[error("AAuth verification failed: {0}")]
-    VerificationFailed(String),
+	#[error("invalid_signature: {description}")]
+	InvalidSignature {
+		description: String,
+		required_components: Option<Vec<String>>,
+	},
 
-    #[error("missing signature headers")]
-    MissingSignature,
+	#[error("invalid_agent_token: {0}")]
+	InvalidAgentToken(String),
 
-    #[error("insufficient authentication level")]
-    InsufficientLevel { challenge: String },
+	#[error("invalid_auth_token: {0}")]
+	InvalidAuthToken(String),
+
+	#[error("key_binding_failed: {0}")]
+	KeyBindingFailed(String),
+
+	#[error("insufficient authentication level")]
+	InsufficientLevel { challenge: String },
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub struct LocalAAuthConfig {
-    #[serde(default)]
-    pub mode: Mode,
-    pub required_scheme: String, // "hwk", "jwks", "jwt"
-    #[serde(default = "default_timestamp_tolerance")]
-    pub timestamp_tolerance: u64,
-    pub challenge: Option<LocalChallengeConfig>,
+	#[serde(default)]
+	pub mode: Mode,
+	pub required_scheme: String, // "hwk", "jwks", "jwt"
+	#[serde(default = "default_timestamp_tolerance")]
+	pub timestamp_tolerance: u64,
+	pub challenge: Option<LocalChallengeConfig>,
 }
 
 fn default_timestamp_tolerance() -> u64 {
-    60
+	60
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub struct LocalChallengeConfig {
-    pub auth_server: String,
+	pub auth_server: String,
 }
 
 impl LocalAAuthConfig {
-    pub async fn try_into(self, client: Client) -> Result<AAuth, AAuthPolicyError> {
-        let required_scheme = RequiredScheme::from_str(&self.required_scheme)
-            .map_err(|e| AAuthPolicyError::VerificationFailed(format!("invalid required_scheme: {}", e)))?;
-        
-        let challenge_config = self.challenge.map(|c| ChallengeConfig {
-            auth_server: c.auth_server,
-        });
+	pub async fn try_into(self, client: Client) -> Result<AAuth, AAuthPolicyError> {
+		let required_scheme = RequiredScheme::from_str(&self.required_scheme)
+			.map_err(|e| AAuth::invalid_signature(format!("invalid required_scheme: {}", e)))?;
 
-        Ok(AAuth::new(
-            self.mode,
-            required_scheme,
-            self.timestamp_tolerance,
-            challenge_config,
-            JwksCache::default(),
-            client,
-        ))
-    }
+		let challenge_config = self.challenge.map(|c| ChallengeConfig {
+			auth_server: c.auth_server,
+		});
+
+		Ok(AAuth::new(
+			self.mode,
+			required_scheme,
+			self.timestamp_tolerance,
+			challenge_config,
+			JwksCache::default(),
+			client,
+		))
+	}
 }
 
 #[derive(Clone)]
 pub struct AAuth {
-    mode: Mode,
-    required_scheme: RequiredScheme,
-    timestamp_tolerance: u64,
-    challenge_config: Option<ChallengeConfig>,
-    jwks_cache: JwksCache,
-    client: Client,
+	mode: Mode,
+	required_scheme: RequiredScheme,
+	timestamp_tolerance: u64,
+	challenge_config: Option<ChallengeConfig>,
+	jwks_cache: JwksCache,
+	client: Client,
 }
 
 impl std::fmt::Debug for AAuth {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AAuth")
-            .field("mode", &self.mode)
-            .field("required_scheme", &self.required_scheme)
-            .field("timestamp_tolerance", &self.timestamp_tolerance)
-            .field("challenge_config", &self.challenge_config)
-            .field("jwks_cache", &"<cache>")
-            .field("client", &"<client>")
-            .finish()
-    }
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("AAuth")
+			.field("mode", &self.mode)
+			.field("required_scheme", &self.required_scheme)
+			.field("timestamp_tolerance", &self.timestamp_tolerance)
+			.field("challenge_config", &self.challenge_config)
+			.field("jwks_cache", &"<cache>")
+			.field("client", &"<client>")
+			.finish()
+	}
 }
 
 impl serde::Serialize for AAuth {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("AAuth", 5)?;
-        state.serialize_field("mode", &self.mode)?;
-        state.serialize_field("required_scheme", &self.required_scheme)?;
-        state.serialize_field("timestamp_tolerance", &self.timestamp_tolerance)?;
-        state.serialize_field("challenge_config", &self.challenge_config)?;
-        state.serialize_field("jwks_cache", &"<cache>")?;
-        state.end()
-    }
+	fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+	where
+		S: serde::Serializer,
+	{
+		use serde::ser::SerializeStruct;
+		let mut state = serializer.serialize_struct("AAuth", 5)?;
+		state.serialize_field("mode", &self.mode)?;
+		state.serialize_field("required_scheme", &self.required_scheme)?;
+		state.serialize_field("timestamp_tolerance", &self.timestamp_tolerance)?;
+		state.serialize_field("challenge_config", &self.challenge_config)?;
+		state.serialize_field("jwks_cache", &"<cache>")?;
+		state.end()
+	}
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub struct ChallengeConfig {
-    pub auth_server: String,
+	pub auth_server: String,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub enum RequiredScheme {
-    Hwk,   // Any signature is sufficient
-    Jwks,  // Must have verifiable identity
-    Jwt,   // Must have authorization token
+	Hwk,  // Any signature is sufficient
+	Jwks, // Must have verifiable identity
+	Jwt,  // Must have authorization token
 }
 
 #[derive(Default, Debug, Clone, Copy, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub enum Mode {
-    /// A valid signature must be present and meet required scheme
-    #[default]
-    Strict,
-    /// If signature exists, validate it. Otherwise allow.
-    Optional,
-    /// Requests are never rejected. Useful for logging/claims extraction.
-    Permissive,
+	/// A valid signature must be present and meet required scheme
+	#[default]
+	Strict,
+	/// If signature exists, validate it. Otherwise allow.
+	Optional,
+	/// Requests are never rejected. Useful for logging/claims extraction.
+	Permissive,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -210,567 +220,738 @@ pub enum Mode {
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[cfg_attr(feature = "schema", schemars(with = "Map<String, Value>"))]
 pub struct AAuthClaims {
-    pub inner: Map<String, Value>,
+	pub inner: Map<String, Value>,
 }
 
 impl DynamicType for AAuthClaims {
-    fn auto_materialize(&self) -> bool {
-        true
-    }
+	fn auto_materialize(&self) -> bool {
+		true
+	}
 
-    fn materialize(&self) -> cel::Value<'_> {
-        self.inner.materialize()
-    }
+	fn materialize(&self) -> cel::Value<'_> {
+		self.inner.materialize()
+	}
 
-    fn field(&self, field: &str) -> Option<cel::Value<'_>> {
-        self.inner.field(field)
-    }
+	fn field(&self, field: &str) -> Option<cel::Value<'_>> {
+		self.inner.field(field)
+	}
 }
 
 /// Fetch JSON from a URL using the client
 async fn fetch_json<T: serde::de::DeserializeOwned>(
-    client: &Client,
-    url: &str,
+	client: &Client,
+	url: &str,
 ) -> Result<T, anyhow::Error> {
-    tracing::debug!(url = %url, "fetch_json: starting HTTP request");
-    
-    let req = ::http::Request::builder()
-        .uri(url)
-        .body(Body::empty())
-        .map_err(|e| {
-            tracing::debug!(url = %url, error = %e, "fetch_json: failed to build request");
-            anyhow::anyhow!("failed to build request: {}", e)
-        })?;
-    
-    let resp = client
-        .simple_call(req)
-        .await
-        .map_err(|e| {
-            tracing::debug!(url = %url, error = %e, "fetch_json: HTTP request failed");
-            anyhow::anyhow!("failed to fetch {}: {}", url, e)
-        })?;
-    
-    tracing::debug!(url = %url, status = %resp.status(), "fetch_json: HTTP response received");
-    
-    crate::json::from_response_body::<T>(resp)
-        .await
-        .map_err(|e| {
-            tracing::debug!(url = %url, error = %e, "fetch_json: failed to parse JSON response");
-            anyhow::anyhow!("failed to parse JSON from {}: {}", url, e)
-        })
+	tracing::debug!(url = %url, "fetch_json: starting HTTP request");
+
+	let req = ::http::Request::builder()
+		.uri(url)
+		.body(Body::empty())
+		.map_err(|e| {
+			tracing::debug!(url = %url, error = %e, "fetch_json: failed to build request");
+			anyhow::anyhow!("failed to build request: {}", e)
+		})?;
+
+	let resp = client.simple_call(req).await.map_err(|e| {
+		tracing::debug!(url = %url, error = %e, "fetch_json: HTTP request failed");
+		anyhow::anyhow!("failed to fetch {}: {}", url, e)
+	})?;
+
+	tracing::debug!(url = %url, status = %resp.status(), "fetch_json: HTTP response received");
+
+	crate::json::from_response_body::<T>(resp)
+		.await
+		.map_err(|e| {
+			tracing::debug!(url = %url, error = %e, "fetch_json: failed to parse JSON response");
+			anyhow::anyhow!("failed to parse JSON from {}: {}", url, e)
+		})
 }
 
 impl AAuth {
-    pub fn new(
-        mode: Mode,
-        required_scheme: RequiredScheme,
-        timestamp_tolerance: u64,
-        challenge_config: Option<ChallengeConfig>,
-        jwks_cache: JwksCache,
-        client: Client,
-    ) -> Self {
-        AAuth {
-            mode,
-            required_scheme,
-            timestamp_tolerance,
-            challenge_config,
-            jwks_cache,
-            client,
-        }
-    }
+	pub fn new(
+		mode: Mode,
+		required_scheme: RequiredScheme,
+		timestamp_tolerance: u64,
+		challenge_config: Option<ChallengeConfig>,
+		jwks_cache: JwksCache,
+		client: Client,
+	) -> Self {
+		AAuth {
+			mode,
+			required_scheme,
+			timestamp_tolerance,
+			challenge_config,
+			jwks_cache,
+			client,
+		}
+	}
 
-    /// Fetch JWKS for an agent, using cache if available
-    async fn get_jwks_key(
-        &self,
-        id: &str,
-        kid: &str,
-        well_known: Option<&str>,
-    ) -> Result<aauth::keys::jwk::JWK, AAuthPolicyError> {
-        tracing::debug!(agent_id = id, kid = kid, well_known = ?well_known, "JWKS: starting key lookup");
-        
-        // 1. Check cache
-        if let Some(jwk) = self.jwks_cache.get(id, kid) {
-            tracing::debug!(agent_id = id, kid = kid, "JWKS: cache hit");
-            return Ok(jwk);
-        }
-        tracing::debug!(agent_id = id, kid = kid, "JWKS: cache miss, fetching from network");
-        
-        // 2. Build metadata URL: {id}/.well-known/{well_known}
-        let well_known = well_known.unwrap_or("aauth-agent");
-        let metadata_url = format!("{}/.well-known/{}", id.trim_end_matches('/'), well_known);
-        tracing::debug!(metadata_url = %metadata_url, "JWKS: fetching agent metadata");
-        
-        // 3. Fetch metadata
-        let metadata: AgentMetadata = fetch_json(&self.client, &metadata_url)
-            .await
-            .map_err(|e| {
-                tracing::info!(
-                    metadata_url = %metadata_url,
-                    error = %e,
-                    "AAuth JWKS: failed to fetch agent metadata"
-                );
-                AAuthPolicyError::VerificationFailed(format!("fetch metadata: {}", e))
-            })?;
-        
-        tracing::debug!(jwks_uri = %metadata.jwks_uri, "JWKS: metadata fetched, extracting jwks_uri");
-        
-        // 4. Fetch JWKS from jwks_uri
-        tracing::debug!(jwks_uri = %metadata.jwks_uri, "JWKS: fetching JWKS");
-        let jwks: JwksResponse = fetch_json(&self.client, &metadata.jwks_uri)
-            .await
-            .map_err(|e| {
-                tracing::info!(
-                    jwks_uri = %metadata.jwks_uri,
-                    error = %e,
-                    "AAuth JWKS: failed to fetch JWKS"
-                );
-                AAuthPolicyError::VerificationFailed(format!("fetch jwks: {}", e))
-            })?;
-        
-        tracing::debug!(key_count = jwks.keys.len(), "JWKS: fetched, caching {} keys", jwks.keys.len());
-        
-        // 5. Cache and find key by kid
-        self.jwks_cache.insert(id, &jwks.keys);
-        
-        let found_key = self.jwks_cache.get(id, kid);
-        if found_key.is_none() {
-            let available_kids: Vec<&str> = jwks.keys.iter()
-                .filter_map(|k| k.kid.as_deref())
-                .collect();
-            tracing::info!(
-                agent_id = id,
-                requested_kid = kid,
-                available_kids = ?available_kids,
-                "AAuth JWKS: key not found in JWKS (requested kid not in available keys)"
-            );
-        } else {
-            tracing::debug!(agent_id = id, kid = kid, "JWKS: key found and cached");
-        }
-        
-        found_key
-            .ok_or_else(|| AAuthPolicyError::VerificationFailed(format!("key {} not found in JWKS", kid)))
-    }
+	/// Fetch JWKS for an agent, using cache if available
+	async fn get_jwks_key(
+		&self,
+		id: &str,
+		kid: &str,
+		well_known: Option<&str>,
+	) -> Result<aauth::keys::jwk::JWK, AAuthPolicyError> {
+		tracing::debug!(agent_id = id, kid = kid, well_known = ?well_known, "JWKS: starting key lookup");
 
-    /// Apply AAuth verification. If `verification_authority` is provided (e.g. "hostname:port"
-    /// from the route hostname and listener port), it is used as the @authority when rebuilding
-    /// the signature base so verification matches what the client signed.
-    pub async fn apply(
-        &self,
-        _log: Option<&mut RequestLog>,
-        req: &mut Request,
-        verification_authority: Option<&str>,
-    ) -> Result<(), AAuthPolicyError> {
-        tracing::debug!(
-            mode = ?self.mode,
-            required_scheme = ?self.required_scheme,
-            method = %req.method(),
-            uri = %req.uri(),
-            "AAuth: starting verification"
-        );
+		// 1. Check cache
+		if let Some(jwk) = self.jwks_cache.get(id, kid) {
+			tracing::debug!(agent_id = id, kid = kid, "JWKS: cache hit");
+			return Ok(jwk);
+		}
+		tracing::debug!(
+			agent_id = id,
+			kid = kid,
+			"JWKS: cache miss, fetching from network"
+		);
 
-        // AAuth protocol well-known paths and JWKS are public; skip HTTPSig verification even in Strict mode
-        let path = req.uri().path();
-        if path.starts_with("/.well-known/aauth-") || path.ends_with("/jwks.json") {
-            tracing::debug!(path = %path, "AAuth: skipping verification for well-known path");
-            return Ok(());
-        }
+		// 2. Build metadata URL: {id}/.well-known/{well_known}
+		let well_known = well_known.unwrap_or("aauth-agent.json");
+		let metadata_url = format!("{}/.well-known/{}", id.trim_end_matches('/'), well_known);
+		tracing::debug!(metadata_url = %metadata_url, "JWKS: fetching agent metadata");
 
-        // Extract signature headers
-        let sig_key_header = req.headers().get("Signature-Key")
-            .and_then(|h| h.to_str().ok());
-        let sig_input_header = req.headers().get("Signature-Input")
-            .and_then(|h| h.to_str().ok());
-        let sig_header = req.headers().get("Signature")
-            .and_then(|h| h.to_str().ok());
+		// 3. Fetch metadata
+		let metadata: AgentMetadata = fetch_json(&self.client, &metadata_url).await.map_err(|e| {
+			tracing::info!(
+					metadata_url = %metadata_url,
+					error = %e,
+					"AAuth JWKS: failed to fetch agent metadata"
+			);
+			Self::invalid_signature(format!("fetch metadata: {}", e))
+		})?;
 
-        tracing::debug!(
-            has_sig_key = sig_key_header.is_some(),
-            has_sig_input = sig_input_header.is_some(),
-            has_sig = sig_header.is_some(),
-            "AAuth: signature headers check"
-        );
+		tracing::debug!(jwks_uri = %metadata.jwks_uri, "JWKS: metadata fetched, extracting jwks_uri");
 
-        // Check if signature is present
-        let has_signature = sig_key_header.is_some() 
-            && sig_input_header.is_some() 
-            && sig_header.is_some();
+		// 4. Fetch JWKS from jwks_uri
+		tracing::debug!(jwks_uri = %metadata.jwks_uri, "JWKS: fetching JWKS");
+		let jwks: JwksResponse = fetch_json(&self.client, &metadata.jwks_uri)
+			.await
+			.map_err(|e| {
+				tracing::info!(
+						jwks_uri = %metadata.jwks_uri,
+						error = %e,
+						"AAuth JWKS: failed to fetch JWKS"
+				);
+				Self::invalid_signature(format!("fetch jwks: {}", e))
+			})?;
 
-        if !has_signature {
-            tracing::debug!(mode = ?self.mode, "AAuth: signature headers missing");
-            if self.mode == Mode::Strict {
-                return Err(AAuthPolicyError::MissingSignature);
-            }
-            // Optional/Permissive: allow request without signature
-            tracing::debug!("AAuth: allowing request without signature (optional/permissive mode)");
-            return Ok(());
-        }
+		tracing::debug!(
+			key_count = jwks.keys.len(),
+			"JWKS: fetched, caching {} keys",
+			jwks.keys.len()
+		);
 
-        // Build URL and Gateway Identifier from request
-        let uri = req.uri();
-        let scheme = uri.scheme().map(|s| s.as_str()).unwrap_or("https");
-        let authority = uri.authority()
-            .map(|a| a.as_str())
-            .or_else(|| req.headers().get("host").and_then(|h| h.to_str().ok()))
-            .ok_or_else(|| AAuthPolicyError::VerificationFailed("missing authority".to_string()))?;
-        let url = format!("{}://{}{}", scheme, authority, uri.path_and_query().map(|pq| pq.as_str()).unwrap_or(""));
-        let gateway_id = format!("{}://{}", scheme, authority);
+		// 5. Cache and find key by kid
+		self.jwks_cache.insert(id, &jwks.keys);
 
-        // Pre-parse signature-key to determine scheme
-        let sig_key_str = sig_key_header.unwrap();
-        tracing::debug!(signature_key_header = sig_key_str, "AAuth: parsing signature-key header");
-        
-        let parsed_sig_key = aauth::headers::parse_signature_key(sig_key_str)
-            .map_err(|e| {
-                tracing::debug!(error = %e, "AAuth: failed to parse signature-key header");
-                AAuthPolicyError::VerificationFailed(e.to_string())
-            })?;
+		let found_key = self.jwks_cache.get(id, kid);
+		if found_key.is_none() {
+			let available_kids: Vec<&str> = jwks.keys.iter().filter_map(|k| k.kid.as_deref()).collect();
+			tracing::info!(
+					agent_id = id,
+					requested_kid = kid,
+					available_kids = ?available_kids,
+					"AAuth JWKS: key not found in JWKS (requested kid not in available keys)"
+			);
+		} else {
+			tracing::debug!(agent_id = id, kid = kid, "JWKS: key found and cached");
+		}
 
-        tracing::debug!(
-            scheme = %parsed_sig_key.scheme,
-            label = %parsed_sig_key.label,
-            params = ?parsed_sig_key.params,
-            "AAuth: signature-key parsed"
-        );
+		found_key.ok_or_else(|| Self::invalid_signature(format!("key {} not found in JWKS", kid)))
+	}
 
-        // Pre-fetch JWKS key if needed (for jwks scheme)
-        let prefetched_key: Option<aauth::keys::ed25519::PublicKey> = 
-            if parsed_sig_key.scheme == "jwks" {
-                tracing::debug!("AAuth: scheme=jwks, starting JWKS key resolution");
-                
-                let id = parsed_sig_key.params.get("id")
-                    .ok_or_else(|| {
-                        tracing::info!("AAuth: jwks scheme missing 'id' parameter in signature-key");
-                        AAuthPolicyError::VerificationFailed("jwks: missing id".to_string())
-                    })?;
-                let kid = parsed_sig_key.params.get("kid")
-                    .ok_or_else(|| {
-                        tracing::info!("AAuth: jwks scheme missing 'kid' parameter in signature-key");
-                        AAuthPolicyError::VerificationFailed("jwks: missing kid".to_string())
-                    })?;
-                let well_known = parsed_sig_key.params.get("well-known").map(|s| s.as_str());
-                
-                tracing::debug!(
-                    agent_id = id,
-                    kid = kid,
-                    well_known = ?well_known,
-                    "AAuth: fetching JWKS key"
-                );
-                
-                let jwk = self.get_jwks_key(id, kid, well_known).await?;
-                
-                tracing::debug!(
-                    agent_id = id,
-                    kid = kid,
-                    jwk_kty = %jwk.kty,
-                    jwk_crv = ?jwk.crv,
-                    "AAuth: JWK retrieved, converting to Ed25519 public key"
-                );
-                
-                let pubkey = jwk.to_ed25519_public_key()
-                    .map_err(|e| {
-                        tracing::info!(
-                            agent_id = id,
-                            kid = kid,
-                            error = %e,
-                            "AAuth: failed to convert JWK to Ed25519 public key (key must be OKP/Ed25519)"
-                        );
-                        AAuthPolicyError::VerificationFailed(e.to_string())
-                    })?;
-                
-                tracing::debug!(
-                    agent_id = id,
-                    kid = kid,
-                    "AAuth: JWK successfully converted to Ed25519 public key"
-                );
-                
-                Some(pubkey)
-            } else {
-                tracing::debug!(scheme = %parsed_sig_key.scheme, "AAuth: scheme is not jwks, skipping JWKS fetch");
-                None
-            };
+	/// Apply AAuth verification. If `verification_authority` is provided (e.g. "hostname:port"
+	/// from the route hostname and listener port), it is used as the @authority when rebuilding
+	/// the signature base so verification matches what the client signed.
+	pub async fn apply(
+		&self,
+		_log: Option<&mut RequestLog>,
+		req: &mut Request,
+		verification_authority: Option<&str>,
+	) -> Result<(), AAuthPolicyError> {
+		tracing::debug!(
+				mode = ?self.mode,
+				required_scheme = ?self.required_scheme,
+				method = %req.method(),
+				uri = %req.uri(),
+				"AAuth: starting verification"
+		);
 
-        // Pre-validate JWT and extract cnf.jwk key (for jwt scheme)
-        // Also capture JWT claims for later use
-        let (prefetched_jwt_key, jwt_claims): (Option<aauth::keys::ed25519::PublicKey>, Option<(String, Option<String>, serde_json::Map<String, serde_json::Value>)>) = 
-            if parsed_sig_key.scheme == "jwt" {
-                tracing::debug!("AAuth: scheme=jwt, starting JWT validation");
-                
-                // 1. Extract JWT from params
-                let jwt = parsed_sig_key.params.get("jwt")
-                    .ok_or_else(|| {
-                        tracing::info!("AAuth: jwt scheme missing 'jwt' parameter in signature-key");
-                        AAuthPolicyError::VerificationFailed("jwt: missing jwt parameter".to_string())
-                    })?;
-                
-                // 2. Decode header to get kid and typ
-                let header = decode_jwt_header(jwt)
-                    .map_err(|e| {
-                        tracing::info!(error = %e, "AAuth: failed to decode JWT header");
-                        AAuthPolicyError::VerificationFailed(format!("jwt: invalid header: {}", e))
-                    })?;
-                
-                let typ = header.typ.as_deref().unwrap_or("");
-                tracing::debug!(typ = typ, kid = ?header.kid, "AAuth: JWT header decoded");
-                
-                // 3. Decode claims (unverified) to get issuer
-                let unverified_claims = decode_jwt_claims_unverified(jwt)
-                    .map_err(|e| {
-                        tracing::info!(error = %e, "AAuth: failed to decode JWT claims");
-                        AAuthPolicyError::VerificationFailed(format!("jwt: invalid claims: {}", e))
-                    })?;
-                
-                let issuer = get_string_claim(&unverified_claims, "iss")
-                    .ok_or_else(|| {
-                        tracing::info!("AAuth: JWT missing 'iss' claim");
-                        AAuthPolicyError::VerificationFailed("jwt: missing iss claim".to_string())
-                    })?;
-                
-                let kid = header.kid.as_ref()
-                    .ok_or_else(|| {
-                        tracing::info!("AAuth: JWT missing 'kid' in header");
-                        AAuthPolicyError::VerificationFailed("jwt: missing kid in header".to_string())
-                    })?;
-                
-                // 4. Fetch JWKS from issuer's well-known endpoint
-                // - agent+jwt tokens: issuer is agent server, use .well-known/aauth-agent
-                // - auth+jwt tokens: issuer is auth server (OIDC), use .well-known/openid-configuration
-                let well_known = match typ {
-                    "agent+jwt" | "at+jwt" => "aauth-agent",
-                    "auth+jwt" => "openid-configuration",
-                    _ => "aauth-agent", // default to aauth-agent for unknown types
-                };
-                
-                tracing::debug!(issuer = %issuer, kid = %kid, well_known = well_known, "AAuth: fetching JWKS for JWT validation");
-                
-                let signing_jwk = self.get_jwks_key(&issuer, kid, Some(well_known)).await?;
-                
-                tracing::debug!(
-                    issuer = %issuer,
-                    kid = %kid,
-                    jwk_kty = %signing_jwk.kty,
-                    "AAuth: JWKS key fetched for JWT validation"
-                );
-                
-                // 5. Validate JWT signature and extract claims/cnf.jwk
-                let (cnf_jwk, agent_id, agent_delegate, validated_claims) = match typ {
-                    "agent+jwt" | "at+jwt" => {
-                        let result = aauth::tokens::validate_agent_token(jwt, &signing_jwk, Some(&gateway_id))
-                            .map_err(|e| {
-                                tracing::info!(error = %e, "AAuth: agent token validation failed");
-                                AAuthPolicyError::VerificationFailed(format!("jwt: validation failed: {}", e))
-                            })?;
-                        (result.cnf_jwk, result.agent_id, result.delegate_id, result.claims)
-                    }
-                    "auth+jwt" => {
-                        let result = aauth::tokens::validate_auth_token(jwt, &signing_jwk)
-                            .map_err(|e| {
-                                tracing::info!(error = %e, "AAuth: auth token validation failed");
-                                AAuthPolicyError::VerificationFailed(format!("jwt: validation failed: {}", e))
-                            })?;
-                        (result.cnf_jwk, result.agent_id, result.user_id, result.claims) // using user_id as delegate for now, though we should map it properly
-                    }
-                    _ => {
-                        return Err(AAuthPolicyError::VerificationFailed(format!("unsupported token typ: {}", typ)));
-                    }
-                };
-                
-                tracing::debug!("AAuth: JWT signature validated successfully");
-                
-                // 7. Convert cnf.jwk to Ed25519 public key
-                let pubkey = cnf_jwk.to_ed25519_public_key()
-                    .map_err(|e| {
-                        tracing::info!(error = %e, "AAuth: failed to convert cnf.jwk to Ed25519 key");
-                        AAuthPolicyError::VerificationFailed(format!("jwt: invalid cnf.jwk: {}", e))
-                    })?;
-                
-                tracing::debug!(
-                    agent_id = %agent_id,
-                    agent_delegate = ?agent_delegate,
-                    "AAuth: JWT successfully validated, cnf.jwk extracted"
-                );
-                
-                (Some(pubkey), Some((agent_id, agent_delegate, validated_claims)))
-            } else {
-                (None, None)
-            };
+		// AAuth protocol well-known paths and JWKS are public; skip HTTPSig verification even in Strict mode
+		let path = req.uri().path();
+		if path.starts_with("/.well-known/aauth-") || path.ends_with("/jwks.json") {
+			tracing::debug!(path = %path, "AAuth: skipping verification for well-known path");
+			return Ok(());
+		}
 
-        // Convert headers to HashMap for verification
-        let mut header_map = HashMap::new();
-        for (name, value) in req.headers() {
-            if let Ok(value_str) = value.to_str() {
-                header_map.insert(name.as_str().to_string(), value_str.to_string());
-            }
-        }
+		// Extract signature headers
+		let sig_key_header = req
+			.headers()
+			.get("Signature-Key")
+			.and_then(|h| h.to_str().ok());
+		let sig_input_header = req
+			.headers()
+			.get("Signature-Input")
+			.and_then(|h| h.to_str().ok());
+		let sig_header = req.headers().get("Signature").and_then(|h| h.to_str().ok());
 
-        // Read body if present
-        let body = if req.headers().contains_key("content-length") || req.headers().contains_key("content-digest") {
-            // Try to peek at body, but don't consume it
-            // For now, we'll verify without body - full implementation would buffer it
-            None
-        } else {
-            None
-        };
+		tracing::debug!(
+			has_sig_key = sig_key_header.is_some(),
+			has_sig_input = sig_input_header.is_some(),
+			has_sig = sig_header.is_some(),
+			"AAuth: signature headers check"
+		);
 
-        // Resolver that handles hwk, jwks, and jwt schemes
-        let prefetched_key_clone = prefetched_key.clone();
-        let prefetched_jwt_key_clone = prefetched_jwt_key.clone();
-        let resolver = move |sig_key: &SignatureKey| -> Result<aauth::keys::ed25519::PublicKey, LibAAuthError> {
-            tracing::debug!(scheme = %sig_key.scheme, "AAuth resolver: resolving public key");
-            
-            match sig_key.scheme.as_str() {
-                "hwk" => {
-                    tracing::debug!("AAuth resolver: using hwk scheme");
-                    resolve_hwk_public_key(sig_key).map_err(|e| {
-                        tracing::debug!(error = %e, "AAuth resolver: hwk resolution failed");
-                        e
-                    })
-                },
-                "jwks" => {
-                    tracing::debug!("AAuth resolver: using jwks scheme");
-                    prefetched_key_clone.clone()
-                        .ok_or_else(|| {
-                            tracing::debug!("AAuth resolver: jwks key was not pre-fetched");
-                            LibAAuthError::JwksFetchError("key not pre-fetched".to_string())
-                        })
-                },
-                "jwt" => {
-                    tracing::debug!("AAuth resolver: using jwt scheme");
-                    prefetched_jwt_key_clone.clone()
-                        .ok_or_else(|| {
-                            tracing::debug!("AAuth resolver: jwt key was not pre-validated");
-                            LibAAuthError::JwtValidationError("jwt not pre-validated".to_string())
-                        })
-                },
-                s => {
-                    tracing::debug!(scheme = s, "AAuth resolver: unsupported scheme");
-                    Err(LibAAuthError::UnsupportedScheme(s.to_string()))
-                },
-            }
-        };
+		// Check if signature is present
+		let has_signature =
+			sig_key_header.is_some() && sig_input_header.is_some() && sig_header.is_some();
 
-        tracing::debug!(
-            method = %req.method(),
-            url = %url,
-            timestamp_tolerance = self.timestamp_tolerance,
-            "AAuth: calling verify_signature"
-        );
-        
-        let verify_result = verify_signature(
-            req.method().as_str(),
-            &url,
-            &header_map,
-            body,
-            self.timestamp_tolerance,
-            &resolver,
-            verification_authority,
-        ).await.map_err(|e| {
-            tracing::info!(error = %e, "AAuth: signature verification failed");
-            AAuthPolicyError::VerificationFailed(e.to_string())
-        })?;
-        
-        tracing::debug!(
-            valid = verify_result.valid,
-            scheme = ?verify_result.scheme,
-            agent_id = ?verify_result.agent_id,
-            "AAuth: signature verification completed"
-        );
+		if !has_signature {
+			tracing::debug!(mode = ?self.mode, "AAuth: signature headers missing");
+			if self.mode == Mode::Strict {
+				return Err(Self::invalid_signature("missing signature headers"));
+			}
+			// Optional/Permissive: allow request without signature
+			tracing::debug!("AAuth: allowing request without signature (optional/permissive mode)");
+			return Ok(());
+		}
 
-        if !verify_result.valid {
-            tracing::debug!(mode = ?self.mode, "AAuth: signature invalid");
-            if self.mode == Mode::Strict {
-                return Err(AAuthPolicyError::VerificationFailed("signature invalid".to_string()));
-            }
-            if self.mode == Mode::Permissive {
-                tracing::debug!("AAuth: permissive mode, allowing invalid signature");
-                return Ok(());
-            }
-            // Optional: allow invalid signature
-            tracing::debug!("AAuth: optional mode, allowing invalid signature");
-            return Ok(());
-        }
+		// Build URL and Gateway Identifier from request
+		let uri = req.uri();
+		let scheme = uri.scheme().map(|s| s.as_str()).unwrap_or("https");
+		let authority = uri
+			.authority()
+			.map(|a| a.as_str())
+			.or_else(|| req.headers().get("host").and_then(|h| h.to_str().ok()))
+			.ok_or_else(|| Self::invalid_signature("missing authority"))?;
+		let url = format!(
+			"{}://{}{}",
+			scheme,
+			authority,
+			uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("")
+		);
+		let gateway_authority = verification_authority.unwrap_or(authority);
+		let gateway_id = format!("{}://{}", scheme, gateway_authority);
 
-        // required_scheme is minimum level (Hwk < Jwks < Jwt). Any scheme >= required is allowed.
-        let scheme_ok = match (self.required_scheme, &verify_result.scheme) {
-            (RequiredScheme::Hwk, _) => true, // Hwk minimum: allow Hwk, Jwks, Jwt
-            (RequiredScheme::Jwks, SignatureScheme::Jwks) => true,
-            (RequiredScheme::Jwks, SignatureScheme::Jwt) => true,
-            (RequiredScheme::Jwt, SignatureScheme::Jwt) => true,
-            _ => false,
-        };
+		// Pre-parse signature-key to determine scheme
+		let sig_key_str = sig_key_header.unwrap();
+		tracing::debug!(
+			signature_key_header = sig_key_str,
+			"AAuth: parsing signature-key header"
+		);
 
-        if !scheme_ok {
-            tracing::debug!(
-                required_scheme = ?self.required_scheme,
-                actual_scheme = ?verify_result.scheme,
-                "AAuth: scheme does not meet required level"
-            );
-            let challenge = self.build_challenge_response();
-            return Err(AAuthPolicyError::InsufficientLevel { challenge });
-        }
-        
-        tracing::debug!("AAuth: verification successful, scheme meets requirements");
+		let parsed_sig_key = aauth::headers::parse_signature_key(sig_key_str).map_err(|e| {
+			tracing::debug!(error = %e, "AAuth: failed to parse signature-key header");
+			Self::invalid_signature(e.to_string())
+		})?;
 
-        // Store claims - merge verification result with JWT claims if available
-        let mut claims_map = Map::new();
-        claims_map.insert("scheme".to_string(), Value::String(format!("{:?}", verify_result.scheme)));
-        
-        // For JWT scheme, use the pre-validated JWT claims
-        // For other schemes, use the verify_result
-        if let Some((agent_id, agent_delegate, validated_jwt_claims)) = jwt_claims {
-            claims_map.insert("agent".to_string(), Value::String(agent_id));
-            if let Some(delegate) = agent_delegate {
-                claims_map.insert("agent_delegate".to_string(), Value::String(delegate));
-            }
-            claims_map.insert("jwt_claims".to_string(), Value::Object(validated_jwt_claims));
-        } else {
-            // Non-JWT scheme - use verify_result
-            if let Some(agent) = verify_result.agent_id {
-                claims_map.insert("agent".to_string(), Value::String(agent));
-            }
-            if let Some(delegate) = verify_result.agent_delegate {
-                claims_map.insert("agent_delegate".to_string(), Value::String(delegate));
-            }
-            if let Some(jwt_claims) = verify_result.claims {
-                claims_map.insert("jwt_claims".to_string(), Value::Object(jwt_claims));
-            }
-        }
-        claims_map.insert("thumbprint".to_string(), Value::String(String::new())); // TODO: extract from signature key
-        
-        let claims = AAuthClaims {
-            inner: claims_map,
-        };
+		tracing::debug!(
+				scheme = %parsed_sig_key.scheme,
+				label = %parsed_sig_key.label,
+				params = ?parsed_sig_key.params,
+				"AAuth: signature-key parsed"
+		);
 
-        req.extensions_mut().insert(claims);
+		// Pre-fetch JWKS key if needed (for jwks scheme)
+		let mut signing_jwk: Option<JWK> = None;
+		let prefetched_key: Option<aauth::keys::ed25519::PublicKey> = if parsed_sig_key.scheme
+			== "jwks_uri"
+		{
+			tracing::debug!("AAuth: scheme=jwks_uri, starting JWKS key resolution");
 
-        Ok(())
-    }
+			let id = parsed_sig_key.params.get("id").ok_or_else(|| {
+				tracing::info!("AAuth: jwks_uri scheme missing 'id' parameter in signature-key");
+				Self::invalid_signature("jwks_uri: missing id")
+			})?;
+			let kid = parsed_sig_key.params.get("kid").ok_or_else(|| {
+				tracing::info!("AAuth: jwks_uri scheme missing 'kid' parameter in signature-key");
+				Self::invalid_signature("jwks_uri: missing kid")
+			})?;
+			let well_known = parsed_sig_key.params.get("well-known").map(|s| s.as_str());
 
-    pub fn build_challenge_response(&self) -> String {
-        match self.required_scheme {
-            RequiredScheme::Hwk => "require=pseudonym".to_string(),
-            RequiredScheme::Jwks => "require=identity".to_string(),
-            RequiredScheme::Jwt => {
-                let auth_server = self.challenge_config.as_ref()
-                    .map(|c| c.auth_server.as_str())
-                    .unwrap_or("");
-                format!(
-                    "require=auth-token; resource-token=\"\"; auth-server=\"{}\"",
-                    auth_server,
-                )
-            }
-        }
-    }
+			tracing::debug!(
+					agent_id = id,
+					kid = kid,
+					well_known = ?well_known,
+					"AAuth: fetching JWKS key"
+			);
+
+			let jwk = self.get_jwks_key(id, kid, well_known).await?;
+			signing_jwk = Some(jwk.clone());
+
+			tracing::debug!(
+					agent_id = id,
+					kid = kid,
+					jwk_kty = %jwk.kty,
+					jwk_crv = ?jwk.crv,
+					"AAuth: JWK retrieved, converting to Ed25519 public key"
+			);
+
+			let pubkey = jwk.to_ed25519_public_key().map_err(|e| {
+				tracing::info!(
+						agent_id = id,
+						kid = kid,
+						error = %e,
+						"AAuth: failed to convert JWK to Ed25519 public key (key must be OKP/Ed25519)"
+				);
+				Self::invalid_signature(e.to_string())
+			})?;
+
+			tracing::debug!(
+				agent_id = id,
+				kid = kid,
+				"AAuth: JWK successfully converted to Ed25519 public key"
+			);
+
+			Some(pubkey)
+		} else {
+			tracing::debug!(scheme = %parsed_sig_key.scheme, "AAuth: scheme is not jwks_uri, skipping JWKS fetch");
+			None
+		};
+
+		#[derive(Debug)]
+		enum JwtKind {
+			Agent,
+			Auth,
+		}
+
+		#[derive(Debug)]
+		struct VerifiedJwtContext {
+			kind: JwtKind,
+			agent_id: String,
+			agent_delegate: Option<String>,
+			user: Option<String>,
+			claims: serde_json::Map<String, serde_json::Value>,
+			cnf_jwk: JWK,
+			scopes: Option<Vec<String>>,
+		}
+
+		// Pre-validate JWT and extract cnf.jwk key (for jwt scheme)
+		// Also capture JWT claims for later use
+		let (prefetched_jwt_key, jwt_context): (
+			Option<aauth::keys::ed25519::PublicKey>,
+			Option<VerifiedJwtContext>,
+		) = if parsed_sig_key.scheme == "jwt" {
+			tracing::debug!("AAuth: scheme=jwt, starting JWT validation");
+
+			// 1. Extract JWT from params
+			let jwt = parsed_sig_key.params.get("jwt").ok_or_else(|| {
+				tracing::info!("AAuth: jwt scheme missing 'jwt' parameter in signature-key");
+				Self::invalid_signature("jwt: missing jwt parameter")
+			})?;
+
+			// 2. Decode header to get kid and typ
+			let header = decode_jwt_header(jwt).map_err(|e| {
+				tracing::info!(error = %e, "AAuth: failed to decode JWT header");
+				Self::invalid_auth_token(format!("invalid header: {}", e))
+			})?;
+
+			let typ = header.typ.as_deref().unwrap_or("");
+			tracing::debug!(typ = typ, kid = ?header.kid, "AAuth: JWT header decoded");
+
+			// 3. Decode claims (unverified) to get issuer
+			let unverified_claims = decode_jwt_claims_unverified(jwt).map_err(|e| {
+				tracing::info!(error = %e, "AAuth: failed to decode JWT claims");
+				Self::invalid_auth_token(format!("invalid claims: {}", e))
+			})?;
+
+			let issuer = get_string_claim(&unverified_claims, "iss").ok_or_else(|| {
+				tracing::info!("AAuth: JWT missing 'iss' claim");
+				Self::invalid_auth_token("missing iss claim")
+			})?;
+
+			let kid = header.kid.as_ref().ok_or_else(|| {
+				tracing::info!("AAuth: JWT missing 'kid' in header");
+				Self::invalid_auth_token("missing kid in header")
+			})?;
+
+			// 4. Fetch JWKS from issuer's well-known endpoint
+			// - agent+jwt tokens: issuer is agent server, use .well-known/aauth-agent
+			// - auth+jwt tokens: issuer is auth server (OIDC), use .well-known/openid-configuration
+			let well_known = match typ {
+				"agent+jwt" | "at+jwt" => "aauth-agent.json",
+				"auth+jwt" => "aauth-issuer.json",
+				_ => "aauth-agent.json",
+			};
+
+			tracing::debug!(issuer = %issuer, kid = %kid, well_known = well_known, "AAuth: fetching JWKS for JWT validation");
+
+			let issuer_jwk = self
+				.get_jwks_key(&issuer, kid, Some(well_known))
+				.await
+				.map_err(|e| match typ {
+					"agent+jwt" | "at+jwt" => Self::invalid_agent_token(e.to_string()),
+					"auth+jwt" => Self::invalid_auth_token(e.to_string()),
+					_ => Self::invalid_auth_token(e.to_string()),
+				})?;
+
+			tracing::debug!(
+					issuer = %issuer,
+					kid = %kid,
+					jwk_kty = %issuer_jwk.kty,
+					"AAuth: JWKS key fetched for JWT validation"
+			);
+
+			// 5. Validate JWT signature and extract claims/cnf.jwk
+			let verified = match typ {
+				"agent+jwt" | "at+jwt" => {
+					let result = aauth::tokens::validate_agent_token(jwt, &issuer_jwk, Some(&gateway_id))
+						.map_err(|e| {
+							tracing::info!(error = %e, "AAuth: agent token validation failed");
+							Self::invalid_agent_token(e.to_string())
+						})?;
+					VerifiedJwtContext {
+						kind: JwtKind::Agent,
+						agent_id: result.agent_id,
+						agent_delegate: result.delegate_id,
+						user: None,
+						claims: result.claims,
+						cnf_jwk: result.cnf_jwk,
+						scopes: None,
+					}
+				},
+				"auth+jwt" => {
+					let result = aauth::tokens::validate_auth_token(jwt, &issuer_jwk, &gateway_id, None)
+						.map_err(|e| {
+							tracing::info!(error = %e, "AAuth: auth token validation failed");
+							Self::invalid_auth_token(e.to_string())
+						})?;
+					VerifiedJwtContext {
+						kind: JwtKind::Auth,
+						agent_id: result.agent_id,
+						agent_delegate: None,
+						user: result.user_id,
+						claims: result.claims,
+						cnf_jwk: result.cnf_jwk,
+						scopes: result.scopes,
+					}
+				},
+				_ => {
+					return Err(Self::invalid_auth_token(format!(
+						"unsupported token typ: {}",
+						typ
+					)));
+				},
+			};
+
+			tracing::debug!("AAuth: JWT signature validated successfully");
+
+			// 7. Convert cnf.jwk to Ed25519 public key
+			let pubkey = verified.cnf_jwk.to_ed25519_public_key().map_err(|e| {
+				tracing::info!(error = %e, "AAuth: failed to convert cnf.jwk to Ed25519 key");
+				Self::invalid_auth_token(format!("invalid cnf.jwk: {}", e))
+			})?;
+
+			tracing::debug!(
+					agent_id = %verified.agent_id,
+					agent_delegate = ?verified.agent_delegate,
+					"AAuth: JWT successfully validated, cnf.jwk extracted"
+			);
+
+			signing_jwk = Some(verified.cnf_jwk.clone());
+			(Some(pubkey), Some(verified))
+		} else {
+			(None, None)
+		};
+
+		// Convert headers to HashMap for verification
+		let mut header_map = HashMap::new();
+		for (name, value) in req.headers() {
+			if let Ok(value_str) = value.to_str() {
+				header_map.insert(name.as_str().to_string(), value_str.to_string());
+			}
+		}
+
+		// Read body if present
+		let body = if req.headers().contains_key("content-length")
+			|| req.headers().contains_key("content-digest")
+		{
+			// Try to peek at body, but don't consume it
+			// For now, we'll verify without body - full implementation would buffer it
+			None
+		} else {
+			None
+		};
+
+		// Resolver that handles hwk, jwks, and jwt schemes
+		let prefetched_key_clone = prefetched_key.clone();
+		let prefetched_jwt_key_clone = prefetched_jwt_key.clone();
+		let resolver =
+			move |sig_key: &SignatureKey| -> Result<aauth::keys::ed25519::PublicKey, LibAAuthError> {
+				tracing::debug!(scheme = %sig_key.scheme, "AAuth resolver: resolving public key");
+
+				match sig_key.scheme.as_str() {
+					"hwk" => {
+						tracing::debug!("AAuth resolver: using hwk scheme");
+						resolve_hwk_public_key(sig_key).map_err(|e| {
+							tracing::debug!(error = %e, "AAuth resolver: hwk resolution failed");
+							e
+						})
+					},
+					"jwks_uri" => {
+						tracing::debug!("AAuth resolver: using jwks_uri scheme");
+						prefetched_key_clone.clone().ok_or_else(|| {
+							tracing::debug!("AAuth resolver: jwks_uri key was not pre-fetched");
+							LibAAuthError::JwksFetchError("key not pre-fetched".to_string())
+						})
+					},
+					"jwt" => {
+						tracing::debug!("AAuth resolver: using jwt scheme");
+						prefetched_jwt_key_clone.clone().ok_or_else(|| {
+							tracing::debug!("AAuth resolver: jwt key was not pre-validated");
+							LibAAuthError::JwtValidationError("jwt not pre-validated".to_string())
+						})
+					},
+					s => {
+						tracing::debug!(scheme = s, "AAuth resolver: unsupported scheme");
+						Err(LibAAuthError::UnsupportedScheme(s.to_string()))
+					},
+				}
+			};
+
+		tracing::debug!(
+				method = %req.method(),
+				url = %url,
+				timestamp_tolerance = self.timestamp_tolerance,
+				"AAuth: calling verify_signature"
+		);
+
+		let verify_result = verify_signature(
+			req.method().as_str(),
+			&url,
+			&header_map,
+			body,
+			self.timestamp_tolerance,
+			&resolver,
+			verification_authority,
+		)
+		.await
+		.map_err(|e| {
+			tracing::info!(error = %e, "AAuth: signature verification failed");
+			Self::map_signature_error(e)
+		})?;
+
+		tracing::debug!(
+				valid = verify_result.valid,
+				scheme = ?verify_result.scheme,
+				agent_id = ?verify_result.agent_id,
+				"AAuth: signature verification completed"
+		);
+
+		if !verify_result.valid {
+			tracing::debug!(mode = ?self.mode, "AAuth: signature invalid");
+			if self.mode == Mode::Strict {
+				return Err(Self::invalid_signature("signature invalid"));
+			}
+			if self.mode == Mode::Permissive {
+				tracing::debug!("AAuth: permissive mode, allowing invalid signature");
+				return Ok(());
+			}
+			// Optional: allow invalid signature
+			tracing::debug!("AAuth: optional mode, allowing invalid signature");
+			return Ok(());
+		}
+
+		// required_scheme is minimum level (Hwk < Jwks < Jwt). Any scheme >= required is allowed.
+		let scheme_ok = match (self.required_scheme, &verify_result.scheme) {
+			(RequiredScheme::Hwk, _) => true, // Hwk minimum: allow Hwk, Jwks, Jwt
+			(RequiredScheme::Jwks, SignatureScheme::Jwks) => true,
+			(RequiredScheme::Jwks, SignatureScheme::Jwt) => true,
+			(RequiredScheme::Jwt, SignatureScheme::Jwt) => true,
+			_ => false,
+		};
+
+		if !scheme_ok {
+			tracing::debug!(
+					required_scheme = ?self.required_scheme,
+					actual_scheme = ?verify_result.scheme,
+					"AAuth: scheme does not meet required level"
+			);
+			let challenge = self.build_challenge_response();
+			return Err(AAuthPolicyError::InsufficientLevel { challenge });
+		}
+
+		tracing::debug!("AAuth: verification successful, scheme meets requirements");
+
+		let thumbprint = signing_jwk
+			.as_ref()
+			.and_then(|jwk| calculate_jwk_thumbprint(jwk).ok())
+			.or_else(|| {
+				Self::signature_key_to_jwk(&parsed_sig_key)
+					.and_then(|jwk| calculate_jwk_thumbprint(&jwk).ok())
+			})
+			.unwrap_or_default();
+
+		// Store claims - merge verification result with JWT claims if available
+		let mut claims_map = Map::new();
+		claims_map.insert(
+			"scheme".to_string(),
+			Value::String(Self::scheme_name(&verify_result.scheme).to_string()),
+		);
+
+		// For JWT scheme, use the pre-validated JWT claims
+		// For other schemes, use the verify_result
+		if let Some(jwt_context) = jwt_context {
+			claims_map.insert("agent".to_string(), Value::String(jwt_context.agent_id));
+			if let Some(delegate) = jwt_context.agent_delegate {
+				claims_map.insert("agent_delegate".to_string(), Value::String(delegate));
+			}
+			if let Some(user) = jwt_context.user {
+				claims_map.insert("user".to_string(), Value::String(user));
+			}
+			if let Some(scopes) = jwt_context.scopes {
+				claims_map.insert(
+					"scope".to_string(),
+					Value::Array(scopes.into_iter().map(Value::String).collect()),
+				);
+			}
+			claims_map.insert(
+				"token_type".to_string(),
+				Value::String(match jwt_context.kind {
+					JwtKind::Agent => "agent+jwt".to_string(),
+					JwtKind::Auth => "auth+jwt".to_string(),
+				}),
+			);
+			claims_map.insert("jwt_claims".to_string(), Value::Object(jwt_context.claims));
+		} else {
+			// Non-JWT scheme - use verify_result
+			if let Some(agent) = verify_result.agent_id {
+				claims_map.insert("agent".to_string(), Value::String(agent));
+			}
+			if let Some(delegate) = verify_result.agent_delegate {
+				claims_map.insert("agent_delegate".to_string(), Value::String(delegate));
+			}
+			if let Some(jwt_claims) = verify_result.claims {
+				claims_map.insert("jwt_claims".to_string(), Value::Object(jwt_claims));
+			}
+		}
+		claims_map.insert("thumbprint".to_string(), Value::String(thumbprint));
+
+		let claims = AAuthClaims { inner: claims_map };
+
+		req.extensions_mut().insert(claims);
+
+		Ok(())
+	}
+
+	pub fn build_challenge_response(&self) -> String {
+		match self.required_scheme {
+			RequiredScheme::Hwk => "require=pseudonym".to_string(),
+			RequiredScheme::Jwks => "require=identity".to_string(),
+			RequiredScheme::Jwt => {
+				let auth_server = self
+					.challenge_config
+					.as_ref()
+					.map(|c| c.auth_server.as_str())
+					.unwrap_or("");
+				format!(
+					"require=auth-token; resource-token=\"\"; auth-server=\"{}\"",
+					auth_server,
+				)
+			},
+		}
+	}
+}
+
+impl AAuth {
+	fn invalid_signature(description: impl Into<String>) -> AAuthPolicyError {
+		AAuthPolicyError::InvalidSignature {
+			description: description.into(),
+			required_components: None,
+		}
+	}
+
+	fn invalid_auth_token(description: impl Into<String>) -> AAuthPolicyError {
+		AAuthPolicyError::InvalidAuthToken(description.into())
+	}
+
+	fn invalid_agent_token(description: impl Into<String>) -> AAuthPolicyError {
+		AAuthPolicyError::InvalidAgentToken(description.into())
+	}
+
+	fn map_signature_error(error: LibAAuthError) -> AAuthPolicyError {
+		match error {
+			LibAAuthError::MissingSignature
+			| LibAAuthError::MissingSignatureInput
+			| LibAAuthError::MissingSignatureKey
+			| LibAAuthError::LabelMismatch
+			| LibAAuthError::TimestampExpired
+			| LibAAuthError::InvalidHeader(_)
+			| LibAAuthError::InvalidSignature(_)
+			| LibAAuthError::UnsupportedScheme(_)
+			| LibAAuthError::UnsupportedAlgorithm(_)
+			| LibAAuthError::InvalidKey(_)
+			| LibAAuthError::Base64Error(_)
+			| LibAAuthError::JsonError(_)
+			| LibAAuthError::UrlError(_) => AAuthPolicyError::InvalidSignature {
+				description: error.to_string(),
+				required_components: match error {
+					LibAAuthError::InvalidSignature(ref description)
+						if description.contains("missing required component") =>
+					{
+						Some(vec![
+							"@method".to_string(),
+							"@authority".to_string(),
+							"@path".to_string(),
+							"signature-key".to_string(),
+						])
+					},
+					_ => None,
+				},
+			},
+			LibAAuthError::JwksFetchError(_) | LibAAuthError::AudienceMismatch => {
+				AAuthPolicyError::InvalidAuthToken(error.to_string())
+			},
+			LibAAuthError::JwtValidationError(_) => AAuthPolicyError::InvalidAuthToken(error.to_string()),
+			LibAAuthError::SignatureKeyNotCovered => AAuthPolicyError::InvalidSignature {
+				description: error.to_string(),
+				required_components: Some(vec![
+					"@method".to_string(),
+					"@authority".to_string(),
+					"@path".to_string(),
+					"signature-key".to_string(),
+				]),
+			},
+		}
+	}
+
+	fn scheme_name(scheme: &SignatureScheme) -> &'static str {
+		match scheme {
+			SignatureScheme::Hwk => "hwk",
+			SignatureScheme::Jwks => "jwks_uri",
+			SignatureScheme::Jwt => "jwt",
+		}
+	}
+
+	fn signature_key_to_jwk(sig_key: &SignatureKey) -> Option<JWK> {
+		if sig_key.scheme != "hwk" {
+			return None;
+		}
+		Some(JWK {
+			kty: sig_key.params.get("kty")?.clone(),
+			crv: sig_key.params.get("crv").cloned(),
+			x: sig_key.params.get("x").cloned(),
+			y: sig_key.params.get("y").cloned(),
+			d: None,
+			n: sig_key.params.get("n").cloned(),
+			e: sig_key.params.get("e").cloned(),
+			kid: sig_key.params.get("kid").cloned(),
+			alg: None,
+			extra: serde_json::Map::new(),
+		})
+	}
 }
 
 impl FromStr for RequiredScheme {
-    type Err = String;
+	type Err = String;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "hwk" => Ok(RequiredScheme::Hwk),
-            "jwks" => Ok(RequiredScheme::Jwks),
-            "jwt" => Ok(RequiredScheme::Jwt),
-            _ => Err(format!("unknown scheme: {}", s)),
-        }
-    }
+	fn from_str(s: &str) -> Result<Self, Self::Err> {
+		match s.to_lowercase().as_str() {
+			"hwk" => Ok(RequiredScheme::Hwk),
+			"jwks" => Ok(RequiredScheme::Jwks),
+			"jwt" => Ok(RequiredScheme::Jwt),
+			_ => Err(format!("unknown scheme: {}", s)),
+		}
+	}
 }

@@ -23,8 +23,8 @@ use crate::http::ext_proc::ExtProcRequest;
 use crate::http::filters::{AutoHostname, BackendRequestTimeout};
 use crate::http::transformation_cel::Transformation;
 use crate::http::{
-	Authority, Body, HeaderName, HeaderValue, PolicyResponse, Request, Response, Scheme, StatusCode, Uri,
-	auth, filters, merge_in_headers, retry,
+	Authority, Body, HeaderName, HeaderValue, PolicyResponse, Request, Response, Scheme, StatusCode,
+	Uri, auth, filters, merge_in_headers, retry,
 };
 use crate::llm::{InputFormat, LLMRequest, RequestResult, RouteType};
 use crate::proxy::{ProxyError, ProxyResponse, ProxyResponseReason, resolve_simple_backend};
@@ -71,12 +71,14 @@ async fn apply_request_policies(
 	response_policies: &mut ResponsePolicies,
 	verification_authority: Option<&str>,
 ) -> Result<(), ProxyResponse> {
-	// AAuth should run early, before other auth policies
-	if let Some(aauth) = &policies.aauth {
-		match aauth.apply(Some(log), req, verification_authority).await {
-			Ok(()) => {},
-			Err(crate::http::aauth::AAuthPolicyError::InsufficientLevel { challenge }) => {
-				use ::http::Response as HttpResponse;
+	fn aauth_error_response(
+		error: crate::http::aauth::AAuthPolicyError,
+	) -> Result<ProxyResponse, ProxyError> {
+		use ::http::Response as HttpResponse;
+		use serde_json::json;
+
+		match error {
+			crate::http::aauth::AAuthPolicyError::InsufficientLevel { challenge } => {
 				let mut resp = HttpResponse::builder()
 					.status(StatusCode::UNAUTHORIZED)
 					.body(Body::empty())
@@ -85,11 +87,76 @@ async fn apply_request_policies(
 					HeaderName::from_static("aauth"),
 					HeaderValue::from_str(&challenge).unwrap(),
 				);
-				return Err(ProxyResponse::DirectResponse(Box::new(resp)));
-			}
-			Err(e) => {
-				return Err(ProxyResponse::from(ProxyError::AAuthFailure(e.to_string())));
-			}
+				Ok(ProxyResponse::DirectResponse(Box::new(resp)))
+			},
+			crate::http::aauth::AAuthPolicyError::InvalidSignature {
+				description,
+				required_components,
+			} => {
+				let mut body = json!({
+					"error": "invalid_signature",
+					"error_description": description,
+				});
+				if let Some(required_components) = required_components {
+					body["required_components"] = json!(required_components);
+				}
+				let resp = HttpResponse::builder()
+					.status(StatusCode::UNAUTHORIZED)
+					.header(::http::header::CONTENT_TYPE, "application/json")
+					.body(Body::from(body.to_string()))
+					.map_err(|_| ProxyError::ProcessingString("failed to build response".to_string()))?;
+				Ok(ProxyResponse::DirectResponse(Box::new(resp)))
+			},
+			crate::http::aauth::AAuthPolicyError::InvalidAgentToken(description) => {
+				let resp = HttpResponse::builder()
+					.status(StatusCode::UNAUTHORIZED)
+					.header(::http::header::CONTENT_TYPE, "application/json")
+					.body(Body::from(
+						json!({
+							"error": "invalid_agent_token",
+							"error_description": description,
+						})
+						.to_string(),
+					))
+					.map_err(|_| ProxyError::ProcessingString("failed to build response".to_string()))?;
+				Ok(ProxyResponse::DirectResponse(Box::new(resp)))
+			},
+			crate::http::aauth::AAuthPolicyError::InvalidAuthToken(description) => {
+				let resp = HttpResponse::builder()
+					.status(StatusCode::UNAUTHORIZED)
+					.header(::http::header::CONTENT_TYPE, "application/json")
+					.body(Body::from(
+						json!({
+							"error": "invalid_auth_token",
+							"error_description": description,
+						})
+						.to_string(),
+					))
+					.map_err(|_| ProxyError::ProcessingString("failed to build response".to_string()))?;
+				Ok(ProxyResponse::DirectResponse(Box::new(resp)))
+			},
+			crate::http::aauth::AAuthPolicyError::KeyBindingFailed(description) => {
+				let resp = HttpResponse::builder()
+					.status(StatusCode::UNAUTHORIZED)
+					.header(::http::header::CONTENT_TYPE, "application/json")
+					.body(Body::from(
+						json!({
+							"error": "key_binding_failed",
+							"error_description": description,
+						})
+						.to_string(),
+					))
+					.map_err(|_| ProxyError::ProcessingString("failed to build response".to_string()))?;
+				Ok(ProxyResponse::DirectResponse(Box::new(resp)))
+			},
+		}
+	}
+
+	// AAuth should run early, before other auth policies
+	if let Some(aauth) = &policies.aauth {
+		match aauth.apply(Some(log), req, verification_authority).await {
+			Ok(()) => {},
+			Err(e) => return Err(aauth_error_response(e)?),
 		}
 	}
 	if let Some(j) = &policies.jwt {

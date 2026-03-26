@@ -37,6 +37,21 @@ pub struct AuthTokenResult {
 	pub claims: Map<String, Value>,
 }
 
+fn is_https_url(value: &str) -> bool {
+	value.starts_with("https://")
+}
+
+fn claim_matches_audience(claims: &Map<String, Value>, expected_audience: &str) -> bool {
+	match claims.get("aud") {
+		Some(Value::String(aud)) => aud == expected_audience,
+		Some(Value::Array(values)) => values
+			.iter()
+			.filter_map(Value::as_str)
+			.any(|aud| aud == expected_audience),
+		_ => false,
+	}
+}
+
 /// Validate auth+jwt token per AAuth spec Section 7
 ///
 /// This function validates the JWT signature using the provided signing JWK (from the auth server's JWKS).
@@ -51,7 +66,12 @@ pub struct AuthTokenResult {
 ///
 /// # Returns
 /// `AuthTokenResult` containing the issuer, agent_id, user_id, scopes, and cnf.jwk
-pub fn validate_auth_token(jwt: &str, signing_jwk: &JWK) -> Result<AuthTokenResult, AAuthError> {
+pub fn validate_auth_token(
+	jwt: &str,
+	signing_jwk: &JWK,
+	expected_audience: &str,
+	expected_agent: Option<&str>,
+) -> Result<AuthTokenResult, AAuthError> {
 	// Check typ header
 	let header = decode_jwt_header(jwt)?;
 	let typ = header.typ.as_deref().unwrap_or("");
@@ -68,15 +88,36 @@ pub fn validate_auth_token(jwt: &str, signing_jwk: &JWK) -> Result<AuthTokenResu
 	// Extract required claims
 	let issuer = get_string_claim(&claims, "iss")
 		.ok_or_else(|| AAuthError::JwtValidationError("missing iss claim in auth token".to_string()))?;
+	if !is_https_url(&issuer) {
+		return Err(AAuthError::JwtValidationError(
+			"auth token iss must be an https URL".to_string(),
+		));
+	}
 
 	let agent_id = get_string_claim(&claims, "agent").ok_or_else(|| {
 		AAuthError::JwtValidationError("missing agent claim in auth token".to_string())
 	})?;
+	if let Some(expected_agent) = expected_agent {
+		if agent_id != expected_agent {
+			return Err(AAuthError::JwtValidationError(format!(
+				"auth token agent mismatch: expected {}, got {}",
+				expected_agent, agent_id
+			)));
+		}
+	}
+	if !claim_matches_audience(&claims, expected_audience) {
+		return Err(AAuthError::AudienceMismatch);
+	}
 
 	// Extract optional claims
 	let user_id = get_string_claim(&claims, "sub");
 	let scopes = get_scopes(&claims);
 	let audience = get_string_claim(&claims, "aud");
+	if user_id.is_none() && scopes.is_none() {
+		return Err(AAuthError::JwtValidationError(
+			"auth token must contain at least one of sub or scope".to_string(),
+		));
+	}
 
 	// Extract cnf.jwk
 	let cnf_jwk = extract_cnf_jwk(&claims)?;

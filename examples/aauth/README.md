@@ -4,13 +4,19 @@ This example demonstrates how to configure and use AAuth (Agent-to-Agent Authent
 
 ## Overview
 
-AAuth implements HTTP Message Signing per RFC 9421 with the AAuth profile extensions. It provides progressive authentication levels:
+AAuth implements HTTP Message Signatures per RFC 9421 with the current AAuth draft profile. It provides progressive authentication levels:
 
 - **hwk** (Pseudonymous): Any HTTP signature is sufficient
-- **jwks** (Identified): Requires verifiable agent identity via JWKS
+- **jwks_uri** (Identified): Requires verifiable agent identity via JWKS
 - **jwt** (Authorized): Requires authorization token from auth server
 
 ## Configuration
+
+The checked-in example config demonstrates:
+
+- strict AAuth verification
+- identity-only access using `requiredScheme: jwks`
+- CEL authorization based on `aauth.*` fields
 
 ```yaml
 policies:
@@ -20,7 +26,11 @@ policies:
       timestampTolerance: 60 # seconds (default: 60)
       challenge:
         authServer: "https://auth.example.com"
+  - authorization:
+      - allow: 'aauth.agent == "https://trusted-agent.example" && (aauth.scheme == "jwks_uri" || (aauth.scheme == "jwt" && aauth.user != null))'
 ```
+
+`requiredScheme` still uses config values `hwk | jwks | jwt`. The identified wire-level signature scheme exposed in CEL is `jwks_uri`, matching `SPEC_UPDATED.md`.
 
 ### Policy Modes
 
@@ -31,7 +41,7 @@ policies:
 ### Required Schemes
 
 - **hwk**: Accepts any HTTP signature (pseudonymous authentication)
-- **jwks**: Requires verifiable agent identity via JWKS discovery
+- **jwks**: Requires verifiable agent identity via `scheme=jwks_uri` discovery
 - **jwt**: Requires authorization token from an auth server
 
 ## Progressive Authentication
@@ -48,14 +58,24 @@ AAuth claims are available for CEL-based authorization:
 
 ```yaml
 authorization:
-  - when: 'aauth.scheme == "jwt" && aauth.agent == "https://trusted-agent.example"'
-    allow: true
+  - allow: 'aauth.scheme == "jwks_uri" && aauth.agent == "https://trusted-agent.example"'
+```
+
+For an `auth+jwt` request where you want both the agent and a delegated user:
+
+```yaml
+authorization:
+  - allow: 'aauth.scheme == "jwt" && aauth.agent == "https://trusted-agent.example" && aauth.user != null'
 ```
 
 Available fields:
-- `aauth.scheme`: Authentication scheme used ("hwk", "jwks", "jwt")
+- `aauth.scheme`: Authentication scheme used (`"hwk"`, `"jwks_uri"`, `"jwt"`)
 - `aauth.agent`: Agent identifier (for jwks/jwt schemes)
 - `aauth.agent_delegate`: Agent delegate identifier (for jwt with agent token)
+- `aauth.user`: End-user identifier from an `auth+jwt` token, if present
+- `aauth.scope`: Authorized scopes from an `auth+jwt` token, if present
+- `aauth.token_type`: `"agent+jwt"` or `"auth+jwt"` for JWT-backed requests
+- `aauth.jwt_claims`: Full validated JWT claims
 - `aauth.thumbprint`: JWK thumbprint of the signing key
 
 ## Running the Example
@@ -65,12 +85,16 @@ Available fields:
    agentgateway --config examples/aauth/config.yaml
    ```
 
-2. Make a request without signature (will be rejected in strict mode):
+2. Make a request without signature. In strict mode the gateway rejects it:
    ```bash
    curl http://localhost:8080/
    ```
 
-3. The gateway will respond with `401 Unauthorized` and an `Agent-Auth` header indicating what's required.
+3. The gateway returns `401 Unauthorized` with a JSON body such as `{"error":"invalid_signature",...}`.
+
+4. Retry with a valid identified signature from `https://trusted-agent.example`. That request satisfies both the AAuth policy and the CEL authorization rule in `config.yaml`.
+
+5. If you change `requiredScheme` to `jwt`, the gateway challenges with `AAuth: require=auth-token; ...`, and CEL can then use fields like `aauth.user`, `aauth.scope`, and `aauth.token_type`.
 
 ## References
 
