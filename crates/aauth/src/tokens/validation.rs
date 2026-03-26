@@ -10,6 +10,17 @@ use serde_json::{Map, Value};
 use crate::errors::AAuthError;
 use crate::keys::jwk::JWK;
 
+/// Whether `iss` is allowed for JWT validation.
+///
+/// By default only `https://` URLs are accepted (AAuth spec). When `allow_insecure_http` is true,
+/// `http://` is also accepted for local development.
+pub(crate) fn is_acceptable_jwt_issuer_url(iss: &str, allow_insecure_http: bool) -> bool {
+	if iss.starts_with("https://") {
+		return true;
+	}
+	allow_insecure_http && iss.starts_with("http://")
+}
+
 /// The `cnf` (confirmation) claim containing the proof-of-possession key
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CnfClaim {

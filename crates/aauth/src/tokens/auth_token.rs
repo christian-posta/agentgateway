@@ -15,7 +15,7 @@ use crate::errors::AAuthError;
 use crate::keys::jwk::JWK;
 use crate::tokens::validation::{
 	decode_jwt_claims_unverified, decode_jwt_header, extract_cnf_jwk, get_scopes, get_string_claim,
-	validate_jwt,
+	is_acceptable_jwt_issuer_url, validate_jwt,
 };
 
 /// Result of validating an auth+jwt token
@@ -35,10 +35,6 @@ pub struct AuthTokenResult {
 	pub cnf_jwk: JWK,
 	/// All claims from the token
 	pub claims: Map<String, Value>,
-}
-
-fn is_https_url(value: &str) -> bool {
-	value.starts_with("https://")
 }
 
 fn claim_matches_audience(claims: &Map<String, Value>, expected_audience: &str) -> bool {
@@ -71,6 +67,7 @@ pub fn validate_auth_token(
 	signing_jwk: &JWK,
 	expected_audience: &str,
 	expected_agent: Option<&str>,
+	allow_insecure_http_issuer: bool,
 ) -> Result<AuthTokenResult, AAuthError> {
 	// Check typ header
 	let header = decode_jwt_header(jwt)?;
@@ -88,9 +85,10 @@ pub fn validate_auth_token(
 	// Extract required claims
 	let issuer = get_string_claim(&claims, "iss")
 		.ok_or_else(|| AAuthError::JwtValidationError("missing iss claim in auth token".to_string()))?;
-	if !is_https_url(&issuer) {
+	if !is_acceptable_jwt_issuer_url(&issuer, allow_insecure_http_issuer) {
 		return Err(AAuthError::JwtValidationError(
-			"auth token iss must be an https URL".to_string(),
+			"auth token iss must be an https URL (set allowInsecureHttpIssuer for local http:// issuers)"
+				.to_string(),
 		));
 	}
 

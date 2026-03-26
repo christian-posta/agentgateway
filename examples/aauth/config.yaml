@@ -17,6 +17,8 @@ binds:
           requiredScheme: jwks
           # Timestamp tolerance in seconds (default: 60)
           timestampTolerance: 60
+          # Local dev only: allow http:// in JWT iss (default false; spec requires https)
+          # allowInsecureHttpIssuer: true
           # Challenge configuration for jwt scheme
           challenge:
             authServer: "https://auth.example.com"

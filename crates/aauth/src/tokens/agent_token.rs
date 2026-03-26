@@ -12,7 +12,8 @@ use serde_json::{Map, Value};
 use crate::errors::AAuthError;
 use crate::keys::jwk::JWK;
 use crate::tokens::validation::{
-	decode_jwt_claims_unverified, decode_jwt_header, extract_cnf_jwk, get_string_claim, validate_jwt,
+	decode_jwt_claims_unverified, decode_jwt_header, extract_cnf_jwk, get_string_claim,
+	is_acceptable_jwt_issuer_url, validate_jwt,
 };
 
 /// Result of validating an agent+jwt token
@@ -26,10 +27,6 @@ pub struct AgentTokenResult {
 	pub cnf_jwk: JWK,
 	/// All claims from the token
 	pub claims: Map<String, Value>,
-}
-
-fn is_https_url(value: &str) -> bool {
-	value.starts_with("https://")
 }
 
 /// Validate agent+jwt token per AAuth spec Section 5
@@ -50,6 +47,7 @@ pub fn validate_agent_token(
 	jwt: &str,
 	signing_jwk: &JWK,
 	expected_audience: Option<&str>,
+	allow_insecure_http_issuer: bool,
 ) -> Result<AgentTokenResult, AAuthError> {
 	// Check typ header - accept both "agent+jwt" and "at+jwt"
 	let header = decode_jwt_header(jwt)?;
@@ -85,9 +83,10 @@ pub fn validate_agent_token(
 	let agent_id = get_string_claim(&claims, "iss").ok_or_else(|| {
 		AAuthError::JwtValidationError("missing iss claim in agent token".to_string())
 	})?;
-	if !is_https_url(&agent_id) {
+	if !is_acceptable_jwt_issuer_url(&agent_id, allow_insecure_http_issuer) {
 		return Err(AAuthError::JwtValidationError(
-			"agent token iss must be an https URL".to_string(),
+			"agent token iss must be an https URL (set allowInsecureHttpIssuer for local http:// issuers)"
+				.to_string(),
 		));
 	}
 

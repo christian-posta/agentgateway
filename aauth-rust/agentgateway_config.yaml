@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=../../schema/local.json
+# yaml-language-server: $schema=../../schema/config.json
 config:
   tracing:
     otlpEndpoint: http://localhost:4317
@@ -28,10 +28,10 @@ config:
         aauth_scheme: 'aauth.scheme'
         aauth_agent_identity: 'aauth.agent'
 # CEL / authorization – You can use the same aauth fields in CEL, e.g.:
-# aauth.scheme == "Jwt"
+# aauth.scheme == "jwt"
 # aauth.agent == "https://agent.example.com"
 # aauth.agent_delegate (user/sub for auth+jwt)
-# aauth.jwt_claims (full JWT claims when scheme is JWT).        
+# aauth.jwt_claims (full JWT claims when scheme is jwt).
 
 binds:
 - port: 3000
@@ -42,7 +42,9 @@ binds:
         aauth:
           mode: optional
           requiredScheme: jwks
-          timestampTolerance: 60    
+          timestampTolerance: 60
+          # Local dev: JWT iss may be http:// (spec requires https)
+          allowInsecureHttpIssuer: true
         # Mark this route as a2a traffic
         a2a: {}
         backendAuth:

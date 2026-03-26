@@ -115,6 +115,9 @@ pub struct LocalAAuthConfig {
 	pub required_scheme: String, // "hwk", "jwks", "jwt"
 	#[serde(default = "default_timestamp_tolerance")]
 	pub timestamp_tolerance: u64,
+	/// When true, accept `http://` in JWT `iss` for agent+jwt and auth+jwt (local dev only).
+	#[serde(default)]
+	pub allow_insecure_http_issuer: bool,
 	pub challenge: Option<LocalChallengeConfig>,
 }
 
@@ -142,6 +145,7 @@ impl LocalAAuthConfig {
 			self.mode,
 			required_scheme,
 			self.timestamp_tolerance,
+			self.allow_insecure_http_issuer,
 			challenge_config,
 			JwksCache::default(),
 			client,
@@ -154,6 +158,7 @@ pub struct AAuth {
 	mode: Mode,
 	required_scheme: RequiredScheme,
 	timestamp_tolerance: u64,
+	allow_insecure_http_issuer: bool,
 	challenge_config: Option<ChallengeConfig>,
 	jwks_cache: JwksCache,
 	client: Client,
@@ -165,6 +170,7 @@ impl std::fmt::Debug for AAuth {
 			.field("mode", &self.mode)
 			.field("required_scheme", &self.required_scheme)
 			.field("timestamp_tolerance", &self.timestamp_tolerance)
+			.field("allow_insecure_http_issuer", &self.allow_insecure_http_issuer)
 			.field("challenge_config", &self.challenge_config)
 			.field("jwks_cache", &"<cache>")
 			.field("client", &"<client>")
@@ -178,10 +184,11 @@ impl serde::Serialize for AAuth {
 		S: serde::Serializer,
 	{
 		use serde::ser::SerializeStruct;
-		let mut state = serializer.serialize_struct("AAuth", 5)?;
+		let mut state = serializer.serialize_struct("AAuth", 6)?;
 		state.serialize_field("mode", &self.mode)?;
 		state.serialize_field("required_scheme", &self.required_scheme)?;
 		state.serialize_field("timestamp_tolerance", &self.timestamp_tolerance)?;
+		state.serialize_field("allow_insecure_http_issuer", &self.allow_insecure_http_issuer)?;
 		state.serialize_field("challenge_config", &self.challenge_config)?;
 		state.serialize_field("jwks_cache", &"<cache>")?;
 		state.end()
@@ -272,6 +279,7 @@ impl AAuth {
 		mode: Mode,
 		required_scheme: RequiredScheme,
 		timestamp_tolerance: u64,
+		allow_insecure_http_issuer: bool,
 		challenge_config: Option<ChallengeConfig>,
 		jwks_cache: JwksCache,
 		client: Client,
@@ -280,6 +288,7 @@ impl AAuth {
 			mode,
 			required_scheme,
 			timestamp_tolerance,
+			allow_insecure_http_issuer,
 			challenge_config,
 			jwks_cache,
 			client,
@@ -596,7 +605,12 @@ impl AAuth {
 			// 5. Validate JWT signature and extract claims/cnf.jwk
 			let verified = match typ {
 				"agent+jwt" | "at+jwt" => {
-					let result = aauth::tokens::validate_agent_token(jwt, &issuer_jwk, Some(&gateway_id))
+					let result = aauth::tokens::validate_agent_token(
+						jwt,
+						&issuer_jwk,
+						Some(&gateway_id),
+						self.allow_insecure_http_issuer,
+					)
 						.map_err(|e| {
 							tracing::info!(error = %e, "AAuth: agent token validation failed");
 							Self::invalid_agent_token(e.to_string())
@@ -612,7 +626,13 @@ impl AAuth {
 					}
 				},
 				"auth+jwt" => {
-					let result = aauth::tokens::validate_auth_token(jwt, &issuer_jwk, &gateway_id, None)
+					let result = aauth::tokens::validate_auth_token(
+						jwt,
+						&issuer_jwk,
+						&gateway_id,
+						None,
+						self.allow_insecure_http_issuer,
+					)
 						.map_err(|e| {
 							tracing::info!(error = %e, "AAuth: auth token validation failed");
 							Self::invalid_auth_token(e.to_string())
