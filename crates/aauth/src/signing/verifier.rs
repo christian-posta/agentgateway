@@ -49,7 +49,7 @@ pub async fn verify_signature(
     method: &str,
     url: &str,
     headers: &HashMap<String, String>,
-    body: Option<&[u8]>,
+    _body: Option<&[u8]>,
     timestamp_tolerance: u64,
     public_key_resolver: &(dyn Fn(&SignatureKey) -> Result<PublicKey, AAuthError> + Send + Sync),
     authority_override: Option<&str>,
@@ -103,9 +103,9 @@ pub async fn verify_signature(
         }
     }
     
-    if body.is_some() {
+    if headers.contains_key("content-digest") {
         if !sig_input.components.iter().any(|c| c == "content-digest") {
-            tracing::debug!("request has body but content-digest is not covered");
+            tracing::debug!("request has content-digest but it is not covered");
             return Err(AAuthError::InvalidSignature("missing content-digest in covered components".to_string()));
         }
     }
