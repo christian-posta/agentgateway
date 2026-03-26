@@ -12,7 +12,7 @@ use aauth::{
     signing::{verify_signature, SignatureScheme, resolve_hwk_public_key},
     errors::AAuthError as LibAAuthError,
     tokens::{
-        decode_jwt_header, decode_jwt_claims_unverified, validate_jwt, extract_cnf_jwk,
+        decode_jwt_header, decode_jwt_claims_unverified,
         get_string_claim,
     },
 };
