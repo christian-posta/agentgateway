@@ -88,12 +88,12 @@ struct JwksResponse {
 pub enum AAuthPolicyError {
     #[error("AAuth verification failed: {0}")]
     VerificationFailed(String),
-    
+
     #[error("missing signature headers")]
     MissingSignature,
-    
+
     #[error("insufficient authentication level")]
-    InsufficientLevel,
+    InsufficientLevel { challenge: String },
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -117,7 +117,6 @@ fn default_timestamp_tolerance() -> u64 {
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub struct LocalChallengeConfig {
     pub auth_server: String,
-    // TODO: Add resource token issuer config
 }
 
 impl LocalAAuthConfig {
@@ -147,7 +146,6 @@ pub struct AAuth {
     timestamp_tolerance: u64,
     challenge_config: Option<ChallengeConfig>,
     jwks_cache: JwksCache,
-    #[cfg_attr(feature = "schema", schemars(skip))]
     client: Client,
 }
 
@@ -184,7 +182,6 @@ impl serde::Serialize for AAuth {
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub struct ChallengeConfig {
     pub auth_server: String,
-    // TODO: Add resource token issuer config
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -209,6 +206,7 @@ pub enum Mode {
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[cfg_attr(feature = "schema", schemars(with = "Map<String, Value>"))]
 pub struct AAuthClaims {
@@ -216,6 +214,10 @@ pub struct AAuthClaims {
 }
 
 impl DynamicType for AAuthClaims {
+    fn auto_materialize(&self) -> bool {
+        true
+    }
+
     fn materialize(&self) -> cel::Value<'_> {
         self.inner.materialize()
     }
@@ -719,8 +721,8 @@ impl AAuth {
                 actual_scheme = ?verify_result.scheme,
                 "AAuth: scheme does not meet required level"
             );
-            // Return challenge response
-            return Err(AAuthPolicyError::InsufficientLevel);
+            let challenge = self.build_challenge_response();
+            return Err(AAuthPolicyError::InsufficientLevel { challenge });
         }
         
         tracing::debug!("AAuth: verification successful, scheme meets requirements");
@@ -760,15 +762,17 @@ impl AAuth {
         Ok(())
     }
 
-    pub fn build_challenge_response(&self, _current_scheme: Option<SignatureScheme>) -> String {
+    pub fn build_challenge_response(&self) -> String {
         match self.required_scheme {
-            RequiredScheme::Hwk => "httpsig".to_string(),
-            RequiredScheme::Jwks => "httpsig; identity=?1".to_string(),
+            RequiredScheme::Hwk => "require=pseudonym".to_string(),
+            RequiredScheme::Jwks => "require=identity".to_string(),
             RequiredScheme::Jwt => {
-                // TODO: Generate resource token if challenge_config is present
+                let auth_server = self.challenge_config.as_ref()
+                    .map(|c| c.auth_server.as_str())
+                    .unwrap_or("");
                 format!(
-                    "httpsig; auth-token; resource_token=\"\"; auth_server=\"{}\"",
-                    self.challenge_config.as_ref().map(|c| c.auth_server.as_str()).unwrap_or("")
+                    "require=auth-token; resource-token=\"\"; auth-server=\"{}\"",
+                    auth_server,
                 )
             }
         }

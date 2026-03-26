@@ -106,16 +106,16 @@ mod tests {
     async fn test_challenge_response_hwk() {
         let aauth = make_test_aauth(Mode::Strict, RequiredScheme::Hwk);
 
-        let challenge = aauth.build_challenge_response(None);
-        assert_eq!(challenge, "httpsig");
+        let challenge = aauth.build_challenge_response();
+        assert_eq!(challenge, "require=pseudonym");
     }
 
     #[tokio::test]
     async fn test_challenge_response_jwks() {
         let aauth = make_test_aauth(Mode::Strict, RequiredScheme::Jwks);
 
-        let challenge = aauth.build_challenge_response(None);
-        assert_eq!(challenge, "httpsig; identity=?1");
+        let challenge = aauth.build_challenge_response();
+        assert_eq!(challenge, "require=identity");
     }
 
     #[tokio::test]
@@ -132,9 +132,10 @@ mod tests {
             make_test_client(),
         );
 
-        let challenge = aauth.build_challenge_response(None);
-        assert!(challenge.contains("httpsig; auth-token"));
-        assert!(challenge.contains("auth_server=\"https://auth.example.com\""));
+        let challenge = aauth.build_challenge_response();
+        assert!(challenge.contains("require=auth-token"));
+        assert!(challenge.contains("resource-token=\"\""));
+        assert!(challenge.contains("auth-server=\"https://auth.example.com\""));
     }
 
     #[test]

@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
-use ::cel::extractors::{Argument, This};
-use ::cel::objects::{MapValue, StringValue, ValueType};
-use ::cel::{Context, FunctionContext, ResolveResult, Value};
-use cel::ExecutionError;
 use cel::context::{SingleVarResolver, VariableResolver};
+use cel::extractors::{Argument, This};
 use cel::objects::KeyRef;
+use cel::objects::{MapValue, StringValue, ValueType};
+use cel::ExecutionError;
+use cel::{Context, FunctionContext, ResolveResult, Value};
 use rand::random_range;
 use serde::Deserializer;
 use uuid::Uuid;
@@ -84,6 +84,7 @@ pub fn variables<'a, 'rf>(ftx: &mut FunctionContext<'a, 'rf>) -> ResolveResult<'
 		"backend",
 		"extauthz",
 		"extproc",
+		"aauth",
 	];
 	let mut res = vector_map::VecMap::with_capacity(keys.len());
 	for k in keys {

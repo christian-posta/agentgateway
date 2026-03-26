@@ -75,17 +75,14 @@ async fn apply_request_policies(
 	if let Some(aauth) = &policies.aauth {
 		match aauth.apply(Some(log), req, verification_authority).await {
 			Ok(()) => {},
-			Err(crate::http::aauth::AAuthPolicyError::InsufficientLevel) => {
-				// Return challenge response
-				let challenge = aauth.build_challenge_response(None);
+			Err(crate::http::aauth::AAuthPolicyError::InsufficientLevel { challenge }) => {
 				use ::http::Response as HttpResponse;
 				let mut resp = HttpResponse::builder()
 					.status(StatusCode::UNAUTHORIZED)
 					.body(Body::empty())
 					.map_err(|_| ProxyError::ProcessingString("failed to build response".to_string()))?;
-				*resp.status_mut() = StatusCode::UNAUTHORIZED;
 				resp.headers_mut().insert(
-					HeaderName::from_static("agent-auth"),
+					HeaderName::from_static("aauth"),
 					HeaderValue::from_str(&challenge).unwrap(),
 				);
 				return Err(ProxyResponse::DirectResponse(Box::new(resp)));

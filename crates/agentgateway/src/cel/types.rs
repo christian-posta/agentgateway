@@ -5,11 +5,11 @@ use std::time::Instant;
 
 use agent_core::strng::Strng;
 use bytes::Bytes;
-use cel::Value;
 use cel::common::ast::OptimizedExpr;
 use cel::context::VariableResolver;
 use cel::objects::BytesValue;
 use cel::types::dynamic::DynamicType;
+use cel::Value;
 use http::{Extensions, HeaderMap, Method, Uri, Version};
 use prometheus_client::encoding::EncodeLabelValue;
 #[cfg(feature = "schema")]
@@ -19,9 +19,9 @@ use serde::{Deserialize, Serialize, Serializer};
 use serde_json::json;
 
 use crate::cel::{Error, Expression, ROOT_CONTEXT};
+use crate::http::aauth::AAuthClaims;
 use crate::http::ext_authz::ExtAuthzDynamicMetadata;
 use crate::http::ext_proc::ExtProcDynamicMetadata;
-use crate::http::aauth::AAuthClaims;
 use crate::http::{apikey, basicauth, jwt};
 use crate::llm::{LLMInfo, LLMRequest};
 use crate::mcp::{ResourceId, ResourceType};
