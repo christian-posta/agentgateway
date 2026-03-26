@@ -31,4 +31,3 @@ gateways:
                   # Challenge configuration for jwt scheme
                   challenge:
                     authServer: "https://auth.example.com"
-                    # TODO: Add resource token issuer configuration

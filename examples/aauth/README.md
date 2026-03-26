@@ -36,11 +36,11 @@ policies:
 
 ## Progressive Authentication
 
-When a client presents a lower authentication level than required, the gateway responds with an `Agent-Auth` header indicating what's needed:
+When a client presents a lower authentication level than required, the gateway responds with an `AAuth` header indicating what's needed:
 
-- For `hwk`: `Agent-Auth: httpsig`
-- For `jwks`: `Agent-Auth: httpsig; identity=?1`
-- For `jwt`: `Agent-Auth: httpsig; auth-token; resource_token="..."; auth_server="..."`
+- For `hwk`: `AAuth: require=pseudonym`
+- For `jwks`: `AAuth: require=identity`
+- For `jwt`: `AAuth: require=auth-token; resource-token=""; auth-server="..."`
 
 ## CEL Authorization
 

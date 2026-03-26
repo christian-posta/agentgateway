@@ -49,7 +49,7 @@ pub async fn verify_signature(
     method: &str,
     url: &str,
     headers: &HashMap<String, String>,
-    _body: Option<&[u8]>,
+    body: Option<&[u8]>,
     timestamp_tolerance: u64,
     public_key_resolver: &(dyn Fn(&SignatureKey) -> Result<PublicKey, AAuthError> + Send + Sync),
     authority_override: Option<&str>,
@@ -94,9 +94,27 @@ pub async fn verify_signature(
         return Err(AAuthError::TimestampExpired);
     }
 
-    // 6. Verify signature-key is in covered components
-    if !sig_input.components.iter().any(|c| c == "signature-key") {
-        return Err(AAuthError::SignatureKeyNotCovered);
+    // 6. Verify required components are covered
+    let required_components = ["@method", "@authority", "@path", "signature-key"];
+    for req_comp in required_components {
+        if !sig_input.components.iter().any(|c| c == req_comp) {
+            tracing::debug!(missing_component = req_comp, "required component missing from signature base");
+            return Err(AAuthError::InvalidSignature(format!("missing required component: {}", req_comp)));
+        }
+    }
+    
+    if body.is_some() {
+        if !sig_input.components.iter().any(|c| c == "content-digest") {
+            tracing::debug!("request has body but content-digest is not covered");
+            return Err(AAuthError::InvalidSignature("missing content-digest in covered components".to_string()));
+        }
+    }
+
+    if headers.contains_key("authorization") {
+        if !sig_input.components.iter().any(|c| c == "authorization") {
+            tracing::debug!("request has authorization header but it is not covered");
+            return Err(AAuthError::InvalidSignature("missing authorization in covered components".to_string()));
+        }
     }
 
     // 7. Resolve public key based on scheme

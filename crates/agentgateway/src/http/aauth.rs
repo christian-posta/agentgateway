@@ -405,6 +405,16 @@ impl AAuth {
             return Ok(());
         }
 
+        // Build URL and Gateway Identifier from request
+        let uri = req.uri();
+        let scheme = uri.scheme().map(|s| s.as_str()).unwrap_or("https");
+        let authority = uri.authority()
+            .map(|a| a.as_str())
+            .or_else(|| req.headers().get("host").and_then(|h| h.to_str().ok()))
+            .ok_or_else(|| AAuthPolicyError::VerificationFailed("missing authority".to_string()))?;
+        let url = format!("{}://{}{}", scheme, authority, uri.path_and_query().map(|pq| pq.as_str()).unwrap_or(""));
+        let gateway_id = format!("{}://{}", scheme, authority);
+
         // Pre-parse signature-key to determine scheme
         let sig_key_str = sig_key_header.unwrap();
         tracing::debug!(signature_key_header = sig_key_str, "AAuth: parsing signature-key header");
@@ -541,27 +551,30 @@ impl AAuth {
                     "AAuth: JWKS key fetched for JWT validation"
                 );
                 
-                // 5. Validate JWT signature
-                let validated_claims = validate_jwt(jwt, &signing_jwk, None)
-                    .map_err(|e| {
-                        tracing::info!(error = %e, "AAuth: JWT signature validation failed");
-                        AAuthPolicyError::VerificationFailed(format!("jwt: validation failed: {}", e))
-                    })?;
+                // 5. Validate JWT signature and extract claims/cnf.jwk
+                let (cnf_jwk, agent_id, agent_delegate, validated_claims) = match typ {
+                    "agent+jwt" | "at+jwt" => {
+                        let result = aauth::tokens::validate_agent_token(jwt, &signing_jwk, Some(&gateway_id))
+                            .map_err(|e| {
+                                tracing::info!(error = %e, "AAuth: agent token validation failed");
+                                AAuthPolicyError::VerificationFailed(format!("jwt: validation failed: {}", e))
+                            })?;
+                        (result.cnf_jwk, result.agent_id, result.delegate_id, result.claims)
+                    }
+                    "auth+jwt" => {
+                        let result = aauth::tokens::validate_auth_token(jwt, &signing_jwk)
+                            .map_err(|e| {
+                                tracing::info!(error = %e, "AAuth: auth token validation failed");
+                                AAuthPolicyError::VerificationFailed(format!("jwt: validation failed: {}", e))
+                            })?;
+                        (result.cnf_jwk, result.agent_id, result.user_id, result.claims) // using user_id as delegate for now, though we should map it properly
+                    }
+                    _ => {
+                        return Err(AAuthPolicyError::VerificationFailed(format!("unsupported token typ: {}", typ)));
+                    }
+                };
                 
                 tracing::debug!("AAuth: JWT signature validated successfully");
-                
-                // 6. Extract cnf.jwk
-                let cnf_jwk = extract_cnf_jwk(&validated_claims)
-                    .map_err(|e| {
-                        tracing::info!(error = %e, "AAuth: failed to extract cnf.jwk from JWT");
-                        AAuthPolicyError::VerificationFailed(format!("jwt: missing cnf.jwk: {}", e))
-                    })?;
-                
-                tracing::debug!(
-                    cnf_jwk_kty = %cnf_jwk.kty,
-                    cnf_jwk_crv = ?cnf_jwk.crv,
-                    "AAuth: cnf.jwk extracted from JWT"
-                );
                 
                 // 7. Convert cnf.jwk to Ed25519 public key
                 let pubkey = cnf_jwk.to_ed25519_public_key()
@@ -569,27 +582,6 @@ impl AAuth {
                         tracing::info!(error = %e, "AAuth: failed to convert cnf.jwk to Ed25519 key");
                         AAuthPolicyError::VerificationFailed(format!("jwt: invalid cnf.jwk: {}", e))
                     })?;
-                
-                // 8. Extract agent identity based on token type
-                let (agent_id, agent_delegate) = match typ {
-                    "agent+jwt" | "at+jwt" => {
-                        // agent+jwt: iss is agent identity, sub is delegate
-                        let agent = issuer.clone();
-                        let delegate = get_string_claim(&validated_claims, "sub");
-                        (agent, delegate)
-                    }
-                    "auth+jwt" => {
-                        // auth+jwt: agent claim is agent identity, sub is user
-                        let agent = get_string_claim(&validated_claims, "agent")
-                            .unwrap_or_else(|| issuer.clone());
-                        let user = get_string_claim(&validated_claims, "sub");
-                        (agent, user)
-                    }
-                    _ => {
-                        // Unknown type, use issuer as agent
-                        (issuer.clone(), None)
-                    }
-                };
                 
                 tracing::debug!(
                     agent_id = %agent_id,
@@ -609,15 +601,6 @@ impl AAuth {
                 header_map.insert(name.as_str().to_string(), value_str.to_string());
             }
         }
-
-        // Build URL from request
-        let uri = req.uri();
-        let scheme = uri.scheme().map(|s| s.as_str()).unwrap_or("https");
-        let authority = uri.authority()
-            .map(|a| a.as_str())
-            .or_else(|| req.headers().get("host").and_then(|h| h.to_str().ok()))
-            .ok_or_else(|| AAuthPolicyError::VerificationFailed("missing authority".to_string()))?;
-        let url = format!("{}://{}{}", scheme, authority, uri.path_and_query().map(|pq| pq.as_str()).unwrap_or(""));
 
         // Read body if present
         let body = if req.headers().contains_key("content-length") || req.headers().contains_key("content-digest") {
