@@ -137,9 +137,11 @@ fn parse_semicolon_format(label: String, value: &str) -> Result<SignatureKey, AA
 	})
 }
 
-/// Build Signature-Key header for hwk scheme
+/// Build Signature-Key header for hwk scheme (RFC 8941 Structured Fields format)
+///
+/// Output: `sig1=hwk;kty="OKP";crv="Ed25519";x="..."`
 pub fn build_signature_key_hwk(label: &str, jwk: &JWK) -> Result<String, AAuthError> {
-	let mut parts = vec![format!("scheme=hwk")];
+	let mut parts = vec!["hwk".to_string()];
 
 	parts.push(format!("kty=\"{}\"", jwk.kty));
 	if let Some(ref crv) = jwk.crv {
@@ -149,32 +151,27 @@ pub fn build_signature_key_hwk(label: &str, jwk: &JWK) -> Result<String, AAuthEr
 		parts.push(format!("x=\"{}\"", x));
 	}
 
-	Ok(format!("{}=({})", label, parts.join(" ")))
+	Ok(format!("{}={}", label, parts.join(";")))
 }
 
-/// Build Signature-Key header for jwks_uri scheme
-pub fn build_signature_key_jwks(
-	label: &str,
-	id: &str,
-	kid: &str,
-	well_known: Option<&str>,
-) -> String {
-	let mut parts = vec![
-		format!("scheme=jwks_uri"),
-		format!("id=\"{}\"", id),
-		format!("kid=\"{}\"", kid),
-	];
-
-	if let Some(wk) = well_known {
-		parts.push(format!("well-known=\"{}\"", wk));
-	}
-
-	format!("{}=({})", label, parts.join(" "))
+/// Build Signature-Key header for jwks_uri scheme (RFC 8941 Structured Fields format)
+///
+/// Output: `sig1=jwks_uri;id="https://...";dwk="aauth-agent.json";kid="key-1"`
+///
+/// `dwk` is REQUIRED per the HTTP Signature Keys spec — it names the well-known metadata
+/// document used to discover the JWKS.
+pub fn build_signature_key_jwks(label: &str, id: &str, kid: &str, dwk: &str) -> String {
+	format!(
+		"{}=jwks_uri;id=\"{}\";dwk=\"{}\";kid=\"{}\"",
+		label, id, dwk, kid
+	)
 }
 
-/// Build Signature-Key header for jwt scheme
+/// Build Signature-Key header for jwt scheme (RFC 8941 Structured Fields format)
+///
+/// Output: `sig1=jwt;jwt="eyJ..."`
 pub fn build_signature_key_jwt(label: &str, jwt: &str) -> String {
-	format!("{}=(scheme=jwt jwt=\"{}\")", label, jwt)
+	format!("{}=jwt;jwt=\"{}\"", label, jwt)
 }
 
 #[cfg(test)]
@@ -183,8 +180,8 @@ mod tests {
 	use crate::keys::jwk::JWK;
 
 	#[test]
-	fn test_parse_signature_key_hwk() {
-		let header = r#"sig1=(scheme=hwk kty="OKP" crv="Ed25519" x="JrQLj5P_89iXES9-vFgrIy29clF9CC_oPPsw3c5D0bs")"#;
+	fn test_parse_signature_key_hwk_semicolon() {
+		let header = r#"sig1=hwk;kty="OKP";crv="Ed25519";x="JrQLj5P_89iXES9-vFgrIy29clF9CC_oPPsw3c5D0bs""#;
 		let sig_key = parse_signature_key(header).unwrap();
 		assert_eq!(sig_key.label, "sig1");
 		assert_eq!(sig_key.scheme, "hwk");
@@ -193,8 +190,18 @@ mod tests {
 	}
 
 	#[test]
+	fn test_parse_signature_key_hwk_legacy_parenthesized() {
+		// Legacy format — still parseable for backward compat
+		let header = r#"sig1=(scheme=hwk kty="OKP" crv="Ed25519" x="JrQLj5P_89iXES9-vFgrIy29clF9CC_oPPsw3c5D0bs")"#;
+		let sig_key = parse_signature_key(header).unwrap();
+		assert_eq!(sig_key.label, "sig1");
+		assert_eq!(sig_key.scheme, "hwk");
+		assert_eq!(sig_key.params.get("kty"), Some(&"OKP".to_string()));
+	}
+
+	#[test]
 	fn test_parse_signature_key_jwks() {
-		let header = r#"sig1=(scheme=jwks_uri id="https://agent.example" kid="key-1" well-known="aauth-agent.json")"#;
+		let header = r#"sig1=jwks_uri;id="https://agent.example";dwk="aauth-agent.json";kid="key-1""#;
 		let sig_key = parse_signature_key(header).unwrap();
 		assert_eq!(sig_key.label, "sig1");
 		assert_eq!(sig_key.scheme, "jwks_uri");
@@ -203,6 +210,7 @@ mod tests {
 			Some(&"https://agent.example".to_string())
 		);
 		assert_eq!(sig_key.params.get("kid"), Some(&"key-1".to_string()));
+		assert_eq!(sig_key.params.get("dwk"), Some(&"aauth-agent.json".to_string()));
 	}
 
 	#[test]
@@ -220,9 +228,10 @@ mod tests {
 			extra: Default::default(),
 		};
 		let header = build_signature_key_hwk("sig1", &jwk).unwrap();
-		assert!(header.contains("scheme=hwk"));
-		assert!(header.contains("kty=\"OKP\""));
-		assert!(header.contains("crv=\"Ed25519\""));
+		assert_eq!(
+			header,
+			r#"sig1=hwk;kty="OKP";crv="Ed25519";x="JrQLj5P_89iXES9-vFgrIy29clF9CC_oPPsw3c5D0bs""#
+		);
 	}
 
 	#[test]
@@ -231,11 +240,11 @@ mod tests {
 			"sig1",
 			"https://agent.example",
 			"key-1",
-			Some("aauth-agent.json"),
+			"aauth-agent.json",
 		);
 		assert_eq!(
 			header,
-			r#"sig1=(scheme=jwks_uri id="https://agent.example" kid="key-1" well-known="aauth-agent.json")"#
+			r#"sig1=jwks_uri;id="https://agent.example";dwk="aauth-agent.json";kid="key-1""#
 		);
 	}
 }

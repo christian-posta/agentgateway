@@ -11,10 +11,9 @@ pub use signing::{SignatureScheme, VerificationResult};
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::digest::calculate_content_digest;
     use crate::keys::{jwk::JWK, jwk_thumbprint::calculate_jwk_thumbprint};
-    use crate::headers::{parse_signature_key, build_signature_key_hwk};
+    use crate::headers::parse_signature_key;
     use serde_json::json;
 
     #[test]
@@ -40,7 +39,18 @@ mod tests {
     }
 
     #[test]
-    fn test_signature_key_parsing() {
+    fn test_signature_key_parsing_semicolon() {
+        // Canonical RFC 8941 Structured Fields format
+        let header = r#"sig1=hwk;kty="OKP";crv="Ed25519";x="JrQLj5P_89iXES9-vFgrIy29clF9CC_oPPsw3c5D0bs""#;
+        let sig_key = parse_signature_key(header).unwrap();
+        assert_eq!(sig_key.label, "sig1");
+        assert_eq!(sig_key.scheme, "hwk");
+        assert_eq!(sig_key.params.get("kty"), Some(&"OKP".to_string()));
+    }
+
+    #[test]
+    fn test_signature_key_parsing_legacy() {
+        // Legacy parenthesized format — still parseable
         let header = r#"sig1=(scheme=hwk kty="OKP" crv="Ed25519" x="JrQLj5P_89iXES9-vFgrIy29clF9CC_oPPsw3c5D0bs")"#;
         let sig_key = parse_signature_key(header).unwrap();
         assert_eq!(sig_key.label, "sig1");

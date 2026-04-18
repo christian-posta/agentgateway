@@ -10,15 +10,58 @@ use serde_json::{Map, Value};
 use crate::errors::AAuthError;
 use crate::keys::jwk::JWK;
 
-/// Whether `iss` is allowed for JWT validation.
+/// Whether `iss` is allowed for JWT validation per AAuth spec.
 ///
-/// By default only `https://` URLs are accepted (AAuth spec). When `allow_insecure_http` is true,
-/// `http://` is also accepted for local development.
+/// AAuth requires server identifiers to be HTTPS URLs with ONLY scheme+host:
+/// no port, no path, no query string, no fragment, and must be lowercase.
+///
+/// When `allow_insecure_http` is true, `http://` with a host (no path/query/fragment)
+/// is also accepted for local development (localhost).
 pub(crate) fn is_acceptable_jwt_issuer_url(iss: &str, allow_insecure_http: bool) -> bool {
-	if iss.starts_with("https://") {
-		return true;
+	match url::Url::parse(iss) {
+		Ok(parsed) => {
+			let scheme = parsed.scheme();
+			let is_https = scheme == "https";
+			let is_http = scheme == "http";
+
+			if !is_https && !(allow_insecure_http && is_http) {
+				return false;
+			}
+
+			// For https, enforce strict host-only (no port, no path, no query, no fragment)
+			if is_https {
+				if parsed.port().is_some() {
+					return false;
+				}
+				let path = parsed.path();
+				if !path.is_empty() && path != "/" {
+					return false;
+				}
+				if parsed.query().is_some() {
+					return false;
+				}
+				if parsed.fragment().is_some() {
+					return false;
+				}
+				// Must be lowercase
+				let host = match parsed.host_str() {
+					Some(h) => h,
+					None => return false,
+				};
+				if host != host.to_lowercase() {
+					return false;
+				}
+			} else {
+				// For http (local dev), just require a host
+				if parsed.host_str().is_none() {
+					return false;
+				}
+			}
+
+			true
+		},
+		Err(_) => false,
 	}
-	allow_insecure_http && iss.starts_with("http://")
 }
 
 /// The `cnf` (confirmation) claim containing the proof-of-possession key
@@ -169,10 +212,10 @@ pub fn validate_jwt(
 	// Configure validation
 	let mut validation = Validation::new(algorithms[0]);
 	validation.algorithms = algorithms;
-	// Disable audience validation (AAuth tokens may not have aud)
+	// Disable audience validation (AAuth tokens may not have aud, caller validates aud separately)
 	validation.validate_aud = false;
-	// We'll validate issuer separately if needed
-	validation.set_required_spec_claims::<&str>(&[]);
+	// Require exp and iat per AAuth spec - tokens MUST have expiry
+	validation.set_required_spec_claims(&["exp", "iat"]);
 
 	// Decode and validate
 	let token_data = decode::<Map<String, Value>>(jwt, &decoding_key, &validation)

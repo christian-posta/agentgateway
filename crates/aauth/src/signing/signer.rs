@@ -76,8 +76,11 @@ pub async fn sign_request(
 			let kid = scheme_params
 				.get("kid")
 				.ok_or_else(|| AAuthError::InvalidHeader("missing kid for jwks_uri scheme".to_string()))?;
-			let well_known = scheme_params.get("well-known").map(|s| s.as_str());
-			build_signature_key_jwks(label, id, kid, well_known)
+			let dwk = scheme_params
+				.get("dwk")
+				.map(|s| s.as_str())
+				.unwrap_or("aauth-agent.json");
+			build_signature_key_jwks(label, id, kid, dwk)
 		},
 		"jwt" => {
 			let jwt = scheme_params
@@ -127,7 +130,6 @@ pub async fn sign_request(
 		headers,
 		&components,
 		&params,
-		&signature_key,
 	)?;
 
 	// 7. Sign signature base

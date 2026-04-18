@@ -52,4 +52,16 @@ pub enum AAuthError {
 
 	#[error("invalid key format: {0}")]
 	InvalidKey(String),
+
+	#[error("missing required claim: {0}")]
+	MissingClaim(String),
+
+	#[error("invalid issuer URL: must be https with host only (no port, path, query, or fragment)")]
+	InvalidIssuerUrl,
+
+	#[error("content-digest verification failed")]
+	ContentDigestMismatch,
+
+	#[error("act claim sub does not match agent identifier")]
+	ActClaimMismatch,
 }

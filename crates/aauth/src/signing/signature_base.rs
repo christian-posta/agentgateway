@@ -32,7 +32,6 @@ pub fn build_signature_base(
     headers: &HashMap<String, String>,
     covered_components: &[&str],
     signature_params: &SignatureParams,
-    signature_key_value: &str,
 ) -> Result<String, AAuthError> {
     let mut lines = Vec::new();
 
@@ -53,13 +52,13 @@ pub fn build_signature_base(
                         "?".to_string()
                     }
                 }
-                "signature-key" => signature_key_value.to_string(),
                 _ => {
                     return Err(AAuthError::InvalidHeader(format!("unknown derived component: {}", component)));
                 }
             }
         } else {
-            // Header name - case-insensitive lookup
+            // Regular header name - case-insensitive lookup
+            // This handles "signature-key" and all other request headers
             let header_value = headers
                 .iter()
                 .find(|(k, _)| k.eq_ignore_ascii_case(component))
@@ -67,8 +66,8 @@ pub fn build_signature_base(
                 .ok_or_else(|| {
                     AAuthError::InvalidHeader(format!("missing header: {}", component))
                 })?;
-            
-            // Normalize header value (trim whitespace, collapse multiple spaces)
+
+            // Normalize header value (trim whitespace)
             header_value.trim().to_string()
         };
 
@@ -114,8 +113,8 @@ mod tests {
     fn test_signature_base_simple_get() {
         let mut headers = HashMap::new();
         headers.insert("Host".to_string(), "resource.example".to_string());
-        
-        let sig_key = "sig1=(scheme=hwk kty=\"OKP\" crv=\"Ed25519\" x=\"JrQLj5P_89iXES9-vFgrIy29clF9CC_oPPsw3c5D0bs\")";
+
+        let sig_key = r#"sig1=hwk;kty="OKP";crv="Ed25519";x="JrQLj5P_89iXES9-vFgrIy29clF9CC_oPPsw3c5D0bs""#;
         headers.insert("Signature-Key".to_string(), sig_key.to_string());
 
         let params = SignatureParams {
@@ -134,10 +133,12 @@ mod tests {
             &headers,
             &components,
             &params,
-            sig_key,
         ).unwrap();
 
-        let expected = "\"@method\": GET\n\"@authority\": resource.example\n\"@path\": /api/data\n\"signature-key\": sig1=(scheme=hwk kty=\"OKP\" crv=\"Ed25519\" x=\"JrQLj5P_89iXES9-vFgrIy29clF9CC_oPPsw3c5D0bs\")\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"signature-key\");created=1730217600";
+        let expected = format!(
+            "\"@method\": GET\n\"@authority\": resource.example\n\"@path\": /api/data\n\"signature-key\": {}\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"signature-key\");created=1730217600",
+            sig_key
+        );
         assert_eq!(base, expected);
     }
 
@@ -145,8 +146,8 @@ mod tests {
     fn test_signature_base_with_query() {
         let mut headers = HashMap::new();
         headers.insert("Host".to_string(), "resource.example".to_string());
-        
-        let sig_key = "sig1=(scheme=hwk kty=\"OKP\" crv=\"Ed25519\" x=\"JrQLj5P_89iXES9-vFgrIy29clF9CC_oPPsw3c5D0bs\")";
+
+        let sig_key = r#"sig1=hwk;kty="OKP";crv="Ed25519";x="JrQLj5P_89iXES9-vFgrIy29clF9CC_oPPsw3c5D0bs""#;
         headers.insert("Signature-Key".to_string(), sig_key.to_string());
 
         let params = SignatureParams {
@@ -165,7 +166,6 @@ mod tests {
             &headers,
             &components,
             &params,
-            sig_key,
         ).unwrap();
 
         assert!(base.contains("\"@query\": ?user=alice&limit=10"));

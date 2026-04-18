@@ -1,13 +1,17 @@
-//! Auth token (auth+jwt) validation per AAuth spec Section 7
+//! Auth token (aa-auth+jwt) validation per AAuth spec Section 7
 //!
 //! Auth tokens are JWTs that:
-//! - Have typ="auth+jwt" in the header
+//! - Have typ="aa-auth+jwt" in the header
 //! - Are signed by an authorization server
 //! - Contain a cnf.jwk claim with the public key for HTTP signature verification
-//! - iss identifies the authorization server
-//! - agent identifies the agent making the request
-//! - sub identifies the user who authorized the agent
-//! - scope contains the granted permissions
+//! - iss identifies the authorization server (HTTPS URL, host-only)
+//! - agent identifies the agent making the request (matches sub from the agent token)
+//! - act (REQUIRED, RFC 8693) actor claim — act.sub MUST match the agent claim
+//! - dwk (REQUIRED) names the discovery document ("aauth-access.json" or "aauth-person.json")
+//! - jti (REQUIRED) unique identifier for replay detection
+//! - sub identifies the user who authorized the agent (optional)
+//! - scope contains the granted permissions (optional)
+//! - At least one of sub or scope MUST be present
 
 use serde_json::{Map, Value};
 
@@ -18,13 +22,22 @@ use crate::tokens::validation::{
 	is_acceptable_jwt_issuer_url, validate_jwt,
 };
 
-/// Result of validating an auth+jwt token
+/// The `typ` header value required for AAuth auth tokens
+pub const AUTH_TOKEN_TYP: &str = "aa-auth+jwt";
+
+/// Result of validating an aa-auth+jwt token
 #[derive(Debug, Clone)]
 pub struct AuthTokenResult {
 	/// The authorization server (iss claim)
 	pub issuer: String,
-	/// The agent identifier (agent claim)
+	/// The agent identifier (agent claim) — matches sub from the agent token
 	pub agent_id: String,
+	/// The actor claim sub (act.sub) — MUST match agent_id
+	pub act_sub: String,
+	/// The discovery document name (dwk claim)
+	pub dwk: String,
+	/// The unique token identifier (jti claim)
+	pub jti: String,
 	/// The user identifier (sub claim) - optional
 	pub user_id: Option<String>,
 	/// The granted scopes (scope claim) - optional
@@ -48,7 +61,22 @@ fn claim_matches_audience(claims: &Map<String, Value>, expected_audience: &str) 
 	}
 }
 
-/// Validate auth+jwt token per AAuth spec Section 7
+/// Extract act.sub from the act claim per RFC 8693
+fn extract_act_sub(claims: &Map<String, Value>) -> Result<String, AAuthError> {
+	let act = claims
+		.get("act")
+		.ok_or_else(|| AAuthError::MissingClaim("act".to_string()))?;
+	let act_obj = act
+		.as_object()
+		.ok_or_else(|| AAuthError::JwtValidationError("act claim is not an object".to_string()))?;
+	act_obj
+		.get("sub")
+		.and_then(|v| v.as_str())
+		.map(|s| s.to_string())
+		.ok_or_else(|| AAuthError::MissingClaim("act.sub".to_string()))
+}
+
+/// Validate aa-auth+jwt token per AAuth spec Section 7
 ///
 /// This function validates the JWT signature using the provided signing JWK (from the auth server's JWKS).
 /// The caller is responsible for:
@@ -57,11 +85,10 @@ fn claim_matches_audience(claims: &Map<String, Value>, expected_audience: &str) 
 /// 3. Finding the correct key by `kid`
 ///
 /// # Arguments
-/// * `jwt` - The auth+jwt token string
+/// * `jwt` - The aa-auth+jwt token string
 /// * `signing_jwk` - The JWK from the auth server's JWKS used to sign this token
-///
-/// # Returns
-/// `AuthTokenResult` containing the issuer, agent_id, user_id, scopes, and cnf.jwk
+/// * `expected_audience` - The audience this resource server expects
+/// * `expected_agent` - The agent identifier to match against the `agent` claim (optional)
 pub fn validate_auth_token(
 	jwt: &str,
 	signing_jwk: &JWK,
@@ -69,32 +96,28 @@ pub fn validate_auth_token(
 	expected_agent: Option<&str>,
 	allow_insecure_http_issuer: bool,
 ) -> Result<AuthTokenResult, AAuthError> {
-	// Check typ header
+	// Check typ header — must be "aa-auth+jwt"
 	let header = decode_jwt_header(jwt)?;
 	let typ = header.typ.as_deref().unwrap_or("");
-	if typ != "auth+jwt" {
+	if typ != AUTH_TOKEN_TYP {
 		return Err(AAuthError::JwtValidationError(format!(
-			"expected typ=auth+jwt, got typ={}",
-			typ
+			"expected typ={}, got typ={}",
+			AUTH_TOKEN_TYP, typ
 		)));
 	}
 
-	// Validate JWT signature
+	// Validate JWT signature (also validates exp and iat)
 	let claims = validate_jwt(jwt, signing_jwk, None)?;
 
 	// Extract required claims
 	let issuer = get_string_claim(&claims, "iss")
-		.ok_or_else(|| AAuthError::JwtValidationError("missing iss claim in auth token".to_string()))?;
+		.ok_or_else(|| AAuthError::MissingClaim("iss".to_string()))?;
 	if !is_acceptable_jwt_issuer_url(&issuer, allow_insecure_http_issuer) {
-		return Err(AAuthError::JwtValidationError(
-			"auth token iss must be an https URL (set allowInsecureHttpIssuer for local http:// issuers)"
-				.to_string(),
-		));
+		return Err(AAuthError::InvalidIssuerUrl);
 	}
 
-	let agent_id = get_string_claim(&claims, "agent").ok_or_else(|| {
-		AAuthError::JwtValidationError("missing agent claim in auth token".to_string())
-	})?;
+	let agent_id = get_string_claim(&claims, "agent")
+		.ok_or_else(|| AAuthError::MissingClaim("agent".to_string()))?;
 	if let Some(expected_agent) = expected_agent {
 		if agent_id != expected_agent {
 			return Err(AAuthError::JwtValidationError(format!(
@@ -103,9 +126,24 @@ pub fn validate_auth_token(
 			)));
 		}
 	}
+
 	if !claim_matches_audience(&claims, expected_audience) {
 		return Err(AAuthError::AudienceMismatch);
 	}
+
+	// act claim is REQUIRED per spec; act.sub MUST match agent claim
+	let act_sub = extract_act_sub(&claims)?;
+	if act_sub != agent_id {
+		return Err(AAuthError::ActClaimMismatch);
+	}
+
+	// dwk is REQUIRED
+	let dwk = get_string_claim(&claims, "dwk")
+		.ok_or_else(|| AAuthError::MissingClaim("dwk".to_string()))?;
+
+	// jti is REQUIRED for replay detection
+	let jti = get_string_claim(&claims, "jti")
+		.ok_or_else(|| AAuthError::MissingClaim("jti".to_string()))?;
 
 	// Extract optional claims
 	let user_id = get_string_claim(&claims, "sub");
@@ -123,6 +161,9 @@ pub fn validate_auth_token(
 	Ok(AuthTokenResult {
 		issuer,
 		agent_id,
+		act_sub,
+		dwk,
+		jti,
 		user_id,
 		scopes,
 		audience,
@@ -164,7 +205,6 @@ pub fn extract_auth_token_key(jwt: &str) -> Result<JWK, AAuthError> {
 mod tests {
 	use super::*;
 
-	// Test helper to create a simple JWT structure (not cryptographically valid)
 	fn make_test_claims() -> Map<String, Value> {
 		let mut claims = Map::new();
 		claims.insert(
@@ -173,7 +213,7 @@ mod tests {
 		);
 		claims.insert(
 			"agent".to_string(),
-			Value::String("https://agent.example.com".to_string()),
+			Value::String("aauth:local@agent.example.com".to_string()),
 		);
 		claims.insert("sub".to_string(), Value::String("user-456".to_string()));
 		claims.insert("scope".to_string(), Value::String("read write".to_string()));
@@ -181,6 +221,16 @@ mod tests {
 			"aud".to_string(),
 			Value::String("https://resource.example.com".to_string()),
 		);
+		claims.insert("dwk".to_string(), Value::String("aauth-access.json".to_string()));
+		claims.insert("jti".to_string(), Value::String("unique-auth-token-456".to_string()));
+
+		// act claim per RFC 8693
+		let mut act = serde_json::Map::new();
+		act.insert(
+			"sub".to_string(),
+			Value::String("aauth:local@agent.example.com".to_string()),
+		);
+		claims.insert("act".to_string(), Value::Object(act));
 
 		let mut cnf = serde_json::Map::new();
 		cnf.insert(
@@ -208,5 +258,12 @@ mod tests {
 		let claims = make_test_claims();
 		let scopes = get_scopes(&claims).unwrap();
 		assert_eq!(scopes, vec!["read", "write"]);
+	}
+
+	#[test]
+	fn test_extract_act_sub() {
+		let claims = make_test_claims();
+		let act_sub = extract_act_sub(&claims).unwrap();
+		assert_eq!(act_sub, "aauth:local@agent.example.com");
 	}
 }

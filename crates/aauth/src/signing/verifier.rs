@@ -1,3 +1,4 @@
+use crate::digest::calculate_content_digest;
 use crate::errors::AAuthError;
 use crate::headers::{SignatureKey, parse_signature, parse_signature_input, parse_signature_key};
 use crate::keys::ed25519::{PublicKey, public_key_from_bytes, verify};
@@ -182,7 +183,6 @@ pub async fn verify_signature(
 			.map(|s| s.as_str())
 			.collect::<Vec<_>>(),
 		&sig_input.params,
-		sig_key_header,
 	)?;
 
 	tracing::debug!(
@@ -205,7 +205,22 @@ pub async fn verify_signature(
 	}
 	tracing::debug!("Ed25519 signature verification succeeded");
 
-	// TODO: 10. Verify Content-Digest if present
+	// 10. Verify Content-Digest if body is present and content-digest is covered
+	if let Some(body_bytes) = _body {
+		if sig_input.components.iter().any(|c| c == "content-digest") {
+			let cd_header = get_header(headers, "content-digest")
+				.ok_or_else(|| AAuthError::InvalidSignature("content-digest in covered components but header missing".to_string()))?;
+			// Try sha-256 first, then sha-512
+			let expected = if cd_header.contains("sha-256") {
+				calculate_content_digest(body_bytes, "sha-256")
+			} else {
+				calculate_content_digest(body_bytes, "sha-512")
+			};
+			if cd_header.as_str() != expected {
+				return Err(AAuthError::ContentDigestMismatch);
+			}
+		}
+	}
 
 	// Extract agent identity for jwks/jwt schemes
 	let agent_id = match scheme {
@@ -242,8 +257,4 @@ pub fn resolve_hwk_public_key(sig_key: &SignatureKey) -> Result<PublicKey, AAuth
 }
 
 #[cfg(test)]
-mod tests {
-	use super::*;
-	use crate::keys::ed25519::generate_keypair;
-	use crate::signing::signer::sign_request;
-}
+mod tests {}

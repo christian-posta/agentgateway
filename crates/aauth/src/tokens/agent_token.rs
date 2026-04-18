@@ -1,11 +1,13 @@
-//! Agent token (agent+jwt) validation per AAuth spec Section 5
+//! Agent token (aa-agent+jwt) validation per AAuth spec Section 5
 //!
 //! Agent tokens are JWTs that:
-//! - Have typ="agent+jwt" or typ="at+jwt" in the header
+//! - Have typ="aa-agent+jwt" in the header
 //! - Are signed by the agent server (issuer)
 //! - Contain a cnf.jwk claim with the public key for HTTP signature verification
-//! - iss identifies the agent server
-//! - sub (optional) identifies the delegate
+//! - iss identifies the agent server (HTTPS URL, host-only)
+//! - sub (REQUIRED) is the stable agent identifier across key rotations
+//! - dwk (REQUIRED) must be "aauth-agent.json" - names the discovery document
+//! - jti (REQUIRED) is a unique identifier for replay detection
 
 use serde_json::{Map, Value};
 
@@ -16,53 +18,60 @@ use crate::tokens::validation::{
 	is_acceptable_jwt_issuer_url, validate_jwt,
 };
 
-/// Result of validating an agent+jwt token
+/// The `typ` header value required for AAuth agent tokens
+pub const AGENT_TOKEN_TYP: &str = "aa-agent+jwt";
+
+/// The required `dwk` claim value for agent tokens
+pub const AGENT_TOKEN_DWK: &str = "aauth-agent.json";
+
+/// Result of validating an aa-agent+jwt token
 #[derive(Debug, Clone)]
 pub struct AgentTokenResult {
-	/// The agent identifier (iss claim)
+	/// The agent server URL (iss claim)
 	pub agent_id: String,
-	/// The delegate identifier (sub claim) - optional
-	pub delegate_id: Option<String>,
+	/// The stable agent identifier (sub claim) - REQUIRED per spec
+	pub subject: String,
+	/// The discovery document name (dwk claim) — always "aauth-agent.json"
+	pub dwk: String,
+	/// The unique token identifier (jti claim)
+	pub jti: String,
 	/// The cnf.jwk public key for HTTP signature verification
 	pub cnf_jwk: JWK,
 	/// All claims from the token
 	pub claims: Map<String, Value>,
 }
 
-/// Validate agent+jwt token per AAuth spec Section 5
+/// Validate aa-agent+jwt token per AAuth spec Section 5
 ///
 /// This function validates the JWT signature using the provided signing JWK (from the agent's JWKS).
 /// The caller is responsible for:
 /// 1. Extracting the issuer from the token (using `get_agent_token_issuer`)
-/// 2. Fetching the JWKS from `{iss}/.well-known/aauth-agent`
+/// 2. Fetching the JWKS from `{iss}/.well-known/aauth-agent.json`
 /// 3. Finding the correct key by `kid`
 ///
 /// # Arguments
-/// * `jwt` - The agent+jwt token string
+/// * `jwt` - The aa-agent+jwt token string
 /// * `signing_jwk` - The JWK from the agent's JWKS used to sign this token
-///
-/// # Returns
-/// `AgentTokenResult` containing the agent_id (iss), delegate_id (sub), and cnf.jwk
 pub fn validate_agent_token(
 	jwt: &str,
 	signing_jwk: &JWK,
 	expected_audience: Option<&str>,
 	allow_insecure_http_issuer: bool,
 ) -> Result<AgentTokenResult, AAuthError> {
-	// Check typ header - accept both "agent+jwt" and "at+jwt"
+	// Check typ header — must be "aa-agent+jwt"
 	let header = decode_jwt_header(jwt)?;
 	let typ = header.typ.as_deref().unwrap_or("");
-	if typ != "agent+jwt" && typ != "at+jwt" {
+	if typ != AGENT_TOKEN_TYP {
 		return Err(AAuthError::JwtValidationError(format!(
-			"expected typ=agent+jwt or at+jwt, got typ={}",
-			typ
+			"expected typ={}, got typ={}",
+			AGENT_TOKEN_TYP, typ
 		)));
 	}
 
-	// Validate JWT signature
+	// Validate JWT signature (also validates exp and iat)
 	let claims = validate_jwt(jwt, signing_jwk, None)?;
 
-	// Validate aud claim if present and an expected audience is provided
+	// Validate aud claim if an expected audience is provided
 	if let Some(expected_aud) = expected_audience {
 		if let Some(aud_val) = claims.get("aud") {
 			let has_audience = match aud_val {
@@ -81,23 +90,38 @@ pub fn validate_agent_token(
 
 	// Extract required claims
 	let agent_id = get_string_claim(&claims, "iss").ok_or_else(|| {
-		AAuthError::JwtValidationError("missing iss claim in agent token".to_string())
+		AAuthError::MissingClaim("iss".to_string())
 	})?;
 	if !is_acceptable_jwt_issuer_url(&agent_id, allow_insecure_http_issuer) {
-		return Err(AAuthError::JwtValidationError(
-			"agent token iss must be an https URL (set allowInsecureHttpIssuer for local http:// issuers)"
-				.to_string(),
-		));
+		return Err(AAuthError::InvalidIssuerUrl);
 	}
 
-	let delegate_id = get_string_claim(&claims, "sub");
+	// sub is REQUIRED in agent tokens — the stable agent identifier
+	let subject = get_string_claim(&claims, "sub")
+		.ok_or_else(|| AAuthError::MissingClaim("sub".to_string()))?;
+
+	// dwk is REQUIRED — must be "aauth-agent.json"
+	let dwk = get_string_claim(&claims, "dwk")
+		.ok_or_else(|| AAuthError::MissingClaim("dwk".to_string()))?;
+	if dwk != AGENT_TOKEN_DWK {
+		return Err(AAuthError::JwtValidationError(format!(
+			"agent token dwk must be \"{}\", got \"{}\"",
+			AGENT_TOKEN_DWK, dwk
+		)));
+	}
+
+	// jti is REQUIRED for replay detection
+	let jti = get_string_claim(&claims, "jti")
+		.ok_or_else(|| AAuthError::MissingClaim("jti".to_string()))?;
 
 	// Extract cnf.jwk
 	let cnf_jwk = extract_cnf_jwk(&claims)?;
 
 	Ok(AgentTokenResult {
 		agent_id,
-		delegate_id,
+		subject,
+		dwk,
+		jti,
 		cnf_jwk,
 		claims,
 	})
@@ -136,14 +160,15 @@ pub fn extract_agent_token_key(jwt: &str) -> Result<JWK, AAuthError> {
 mod tests {
 	use super::*;
 
-	// Test helper to create a simple JWT structure (not cryptographically valid)
 	fn make_test_claims() -> Map<String, Value> {
 		let mut claims = Map::new();
 		claims.insert(
 			"iss".to_string(),
 			Value::String("https://agent.example.com".to_string()),
 		);
-		claims.insert("sub".to_string(), Value::String("delegate-123".to_string()));
+		claims.insert("sub".to_string(), Value::String("aauth:local@agent.example.com".to_string()));
+		claims.insert("dwk".to_string(), Value::String("aauth-agent.json".to_string()));
+		claims.insert("jti".to_string(), Value::String("unique-token-id-123".to_string()));
 
 		let mut cnf = serde_json::Map::new();
 		cnf.insert(
