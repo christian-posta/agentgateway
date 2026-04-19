@@ -3,7 +3,7 @@ use thiserror::Error;
 /// AAuth protocol errors.
 ///
 /// Signing-layer variants (from `http-sig`) are retained here for backward compatibility
-/// with existing consumers. New code should prefer matching on `http_sig::Error` directly.
+/// with existing consumers. New code should prefer matching on `http_message_sig::Error` directly.
 #[derive(Debug, Error)]
 pub enum AAuthError {
 	// --- HTTP signing layer (from http-sig) ---
@@ -72,24 +72,24 @@ pub enum AAuthError {
 	ActClaimMismatch,
 }
 
-impl From<http_sig::Error> for AAuthError {
-	fn from(e: http_sig::Error) -> Self {
+impl From<http_message_sig::Error> for AAuthError {
+	fn from(e: http_message_sig::Error) -> Self {
 		match e {
-			http_sig::Error::MissingSignatureKey => AAuthError::MissingSignatureKey,
-			http_sig::Error::MissingSignatureInput => AAuthError::MissingSignatureInput,
-			http_sig::Error::MissingSignature => AAuthError::MissingSignature,
-			http_sig::Error::LabelMismatch => AAuthError::LabelMismatch,
-			http_sig::Error::SignatureKeyNotCovered => AAuthError::SignatureKeyNotCovered,
-			http_sig::Error::TimestampExpired => AAuthError::TimestampExpired,
-			http_sig::Error::InvalidSignature(s) => AAuthError::InvalidSignature(s),
-			http_sig::Error::UnsupportedScheme(s) => AAuthError::UnsupportedScheme(s),
-			http_sig::Error::UnsupportedAlgorithm(s) => AAuthError::UnsupportedAlgorithm(s),
-			http_sig::Error::ContentDigestMismatch => AAuthError::ContentDigestMismatch,
-			http_sig::Error::InvalidHeader(s) => AAuthError::InvalidHeader(s),
-			http_sig::Error::InvalidKey(s) => AAuthError::InvalidKey(s),
-			http_sig::Error::Base64Error(e) => AAuthError::InvalidKey(e.to_string()),
-			http_sig::Error::UrlError(e) => AAuthError::InvalidHeader(e.to_string()),
-			http_sig::Error::JsonError(e) => AAuthError::JsonError(e),
+			http_message_sig::Error::MissingSignatureKey => AAuthError::MissingSignatureKey,
+			http_message_sig::Error::MissingSignatureInput => AAuthError::MissingSignatureInput,
+			http_message_sig::Error::MissingSignature => AAuthError::MissingSignature,
+			http_message_sig::Error::LabelMismatch => AAuthError::LabelMismatch,
+			http_message_sig::Error::SignatureKeyNotCovered => AAuthError::SignatureKeyNotCovered,
+			http_message_sig::Error::TimestampExpired => AAuthError::TimestampExpired,
+			http_message_sig::Error::InvalidSignature(s) => AAuthError::InvalidSignature(s),
+			http_message_sig::Error::UnsupportedScheme(s) => AAuthError::UnsupportedScheme(s),
+			http_message_sig::Error::UnsupportedAlgorithm(s) => AAuthError::UnsupportedAlgorithm(s),
+			http_message_sig::Error::ContentDigestMismatch => AAuthError::ContentDigestMismatch,
+			http_message_sig::Error::InvalidHeader(s) => AAuthError::InvalidHeader(s),
+			http_message_sig::Error::InvalidKey(s) => AAuthError::InvalidKey(s),
+			http_message_sig::Error::Base64Error(e) => AAuthError::InvalidKey(e.to_string()),
+			http_message_sig::Error::UrlError(e) => AAuthError::InvalidHeader(e.to_string()),
+			http_message_sig::Error::JsonError(e) => AAuthError::JsonError(e),
 		}
 	}
 }

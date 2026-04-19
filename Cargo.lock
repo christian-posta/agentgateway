@@ -16,16 +16,12 @@ name = "aauth"
 version = "0.7.0"
 dependencies = [
  "base64",
- "ed25519-dalek",
+ "http-message-sig",
  "insta",
  "jsonwebtoken",
- "rand 0.8.5",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "thiserror 2.0.17",
- "tokio",
- "tracing",
  "url",
 ]
 
@@ -198,6 +194,7 @@ dependencies = [
  "http 1.4.0",
  "http-body 1.0.1",
  "http-body-util",
+ "http-message-sig",
  "http-serde",
  "httpdate",
  "hyper",
@@ -2955,6 +2952,21 @@ dependencies = [
  "http 1.4.0",
  "http-body 1.0.1",
  "pin-project-lite",
+]
+
+[[package]]
+name = "http-message-sig"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "ed25519-dalek",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.17",
+ "tracing",
+ "url",
 ]
 
 [[package]]

@@ -1,0 +1,21 @@
+[package]
+name = "http-message-sig"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = true
+description = "RFC 9421 HTTP Message Signatures and HTTP Signature Keys (draft-hardt-httpbis-signature-key)"
+repository = "https://github.com/agentgateway/agentgateway"
+keywords = ["http", "signatures", "rfc9421", "aauth", "security"]
+categories = ["authentication", "cryptography", "web-programming"]
+
+[dependencies]
+tracing = "0.1"
+ed25519-dalek = "2"
+sha2 = "0.10"
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2.5"
+thiserror = "2.0"
+rand = "0.8"

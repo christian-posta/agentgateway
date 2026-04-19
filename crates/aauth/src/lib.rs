@@ -1,18 +1,18 @@
 //! AAuth protocol token validation (draft-hardt-aauth-protocol).
 //!
 //! This crate implements AAuth agent and auth token validation.
-//! The underlying HTTP signing layer (RFC 9421, Signature-Key spec) lives in the `http-sig` crate,
+//! The underlying HTTP signing layer (RFC 9421, Signature-Key spec) lives in the `http-message-sig` crate,
 //! which is re-exported here for backward compatibility.
 
 pub mod tokens;
 pub mod errors;
 
-// Re-export http-sig modules so existing consumers can keep using `aauth::keys::*` etc.
-pub use http_sig::encoding;
-pub use http_sig::digest;
-pub use http_sig::keys;
-pub use http_sig::headers;
-pub use http_sig::signing;
+// Re-export http-message-sig modules so existing consumers can keep using `aauth::keys::*` etc.
+pub use http_message_sig::encoding;
+pub use http_message_sig::digest;
+pub use http_message_sig::keys;
+pub use http_message_sig::headers;
+pub use http_message_sig::signing;
 
 pub use errors::AAuthError;
 pub use signing::{SignatureScheme, VerificationResult};

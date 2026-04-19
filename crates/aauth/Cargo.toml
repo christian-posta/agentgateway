@@ -6,7 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-http-sig = { path = "../http-sig" }
+http-message-sig = { path = "../http-message-sig" }
 base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
