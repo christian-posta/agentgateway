@@ -16,7 +16,7 @@
 use serde_json::{Map, Value};
 
 use crate::errors::AAuthError;
-use crate::keys::jwk::JWK;
+use http_sig::keys::jwk::JWK;
 use crate::tokens::validation::{
 	decode_jwt_claims_unverified, decode_jwt_header, extract_cnf_jwk, get_scopes, get_string_claim,
 	is_acceptable_jwt_issuer_url, validate_jwt,

@@ -1,7 +1,7 @@
 use sha2::{Digest, Sha256};
 use crate::keys::jwk::JWK;
 use crate::encoding::base64url_encode;
-use crate::errors::AAuthError;
+use crate::errors::Error;
 
 /// Calculate JWK Thumbprint per RFC 7638
 /// 
@@ -9,7 +9,7 @@ use crate::errors::AAuthError;
 /// 1. Build canonical JSON with ONLY required members, SORTED alphabetically
 /// 2. SHA-256 hash the canonical JSON bytes
 /// 3. Base64URL encode WITHOUT padding
-pub fn calculate_jwk_thumbprint(jwk: &JWK) -> Result<String, AAuthError> {
+pub fn calculate_jwk_thumbprint(jwk: &JWK) -> Result<String, Error> {
     let canonical = jwk.canonical_json()?;
     let mut hasher = Sha256::new();
     hasher.update(canonical.as_bytes());

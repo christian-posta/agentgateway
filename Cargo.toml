@@ -8,6 +8,7 @@ resolver = "2"
 members = [
     "crates/a2a-sdk",
     "crates/aauth",
+    "crates/http-sig",
     "crates/agentgateway",
     "crates/agentgateway-app",
     "crates/cel-fork/cel",

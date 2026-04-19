@@ -618,7 +618,7 @@ impl AAuth {
 					VerifiedJwtContext {
 						kind: JwtKind::Agent,
 						agent_id: result.agent_id,
-						agent_delegate: result.delegate_id,
+						agent_delegate: Some(result.subject),
 						user: None,
 						claims: result.claims,
 						cnf_jwk: result.cnf_jwk,
@@ -698,7 +698,7 @@ impl AAuth {
 		let prefetched_key_clone = prefetched_key.clone();
 		let prefetched_jwt_key_clone = prefetched_jwt_key.clone();
 		let resolver =
-			move |sig_key: &SignatureKey| -> Result<aauth::keys::ed25519::PublicKey, LibAAuthError> {
+			move |sig_key: &SignatureKey| -> Result<aauth::keys::ed25519::PublicKey, http_sig::Error> {
 				tracing::debug!(scheme = %sig_key.scheme, "AAuth resolver: resolving public key");
 
 				match sig_key.scheme.as_str() {
@@ -713,19 +713,19 @@ impl AAuth {
 						tracing::debug!("AAuth resolver: using jwks_uri scheme");
 						prefetched_key_clone.clone().ok_or_else(|| {
 							tracing::debug!("AAuth resolver: jwks_uri key was not pre-fetched");
-							LibAAuthError::JwksFetchError("key not pre-fetched".to_string())
+							http_sig::Error::InvalidKey("key not pre-fetched".to_string())
 						})
 					},
 					"jwt" => {
 						tracing::debug!("AAuth resolver: using jwt scheme");
 						prefetched_jwt_key_clone.clone().ok_or_else(|| {
 							tracing::debug!("AAuth resolver: jwt key was not pre-validated");
-							LibAAuthError::JwtValidationError("jwt not pre-validated".to_string())
+							http_sig::Error::InvalidKey("jwt not pre-validated".to_string())
 						})
 					},
 					s => {
 						tracing::debug!(scheme = s, "AAuth resolver: unsupported scheme");
-						Err(LibAAuthError::UnsupportedScheme(s.to_string()))
+						Err(http_sig::Error::UnsupportedScheme(s.to_string()))
 					},
 				}
 			};
@@ -749,7 +749,7 @@ impl AAuth {
 		.await
 		.map_err(|e| {
 			tracing::info!(error = %e, "AAuth: signature verification failed");
-			Self::map_signature_error(e)
+			Self::map_signature_error(e.into())
 		})?;
 
 		tracing::debug!(
@@ -920,8 +920,16 @@ impl AAuth {
 					_ => None,
 				},
 			},
-			LibAAuthError::JwksFetchError(_) | LibAAuthError::AudienceMismatch => {
+			LibAAuthError::JwksFetchError(_)
+			| LibAAuthError::AudienceMismatch
+			| LibAAuthError::MissingClaim(_)
+			| LibAAuthError::InvalidIssuerUrl
+			| LibAAuthError::ActClaimMismatch => {
 				AAuthPolicyError::InvalidAuthToken(error.to_string())
+			},
+			LibAAuthError::ContentDigestMismatch => AAuthPolicyError::InvalidSignature {
+				description: error.to_string(),
+				required_components: None,
 			},
 			LibAAuthError::JwtValidationError(_) => AAuthPolicyError::InvalidAuthToken(error.to_string()),
 			LibAAuthError::SignatureKeyNotCovered => AAuthPolicyError::InvalidSignature {

@@ -1,10 +1,18 @@
-pub mod encoding;
-pub mod digest;
-pub mod keys;
-pub mod headers;
-pub mod signing;
+//! AAuth protocol token validation (draft-hardt-aauth-protocol).
+//!
+//! This crate implements AAuth agent and auth token validation.
+//! The underlying HTTP signing layer (RFC 9421, Signature-Key spec) lives in the `http-sig` crate,
+//! which is re-exported here for backward compatibility.
+
 pub mod tokens;
 pub mod errors;
+
+// Re-export http-sig modules so existing consumers can keep using `aauth::keys::*` etc.
+pub use http_sig::encoding;
+pub use http_sig::digest;
+pub use http_sig::keys;
+pub use http_sig::headers;
+pub use http_sig::signing;
 
 pub use errors::AAuthError;
 pub use signing::{SignatureScheme, VerificationResult};
@@ -40,7 +48,6 @@ mod tests {
 
     #[test]
     fn test_signature_key_parsing_semicolon() {
-        // Canonical RFC 8941 Structured Fields format
         let header = r#"sig1=hwk;kty="OKP";crv="Ed25519";x="JrQLj5P_89iXES9-vFgrIy29clF9CC_oPPsw3c5D0bs""#;
         let sig_key = parse_signature_key(header).unwrap();
         assert_eq!(sig_key.label, "sig1");
@@ -50,7 +57,6 @@ mod tests {
 
     #[test]
     fn test_signature_key_parsing_legacy() {
-        // Legacy parenthesized format — still parseable
         let header = r#"sig1=(scheme=hwk kty="OKP" crv="Ed25519" x="JrQLj5P_89iXES9-vFgrIy29clF9CC_oPPsw3c5D0bs")"#;
         let sig_key = parse_signature_key(header).unwrap();
         assert_eq!(sig_key.label, "sig1");

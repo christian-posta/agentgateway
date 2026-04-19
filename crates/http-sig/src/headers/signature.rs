@@ -1,13 +1,13 @@
 use crate::encoding::{base64_decode, base64url_decode};
-use crate::errors::AAuthError;
+use crate::errors::Error;
 
 /// Parse Signature header: label=:base64signature:
 /// Returns (label, signature_bytes)
 /// Accepts both standard base64 and base64url (RFC 4648); many clients send base64url.
-pub fn parse_signature(header: &str) -> Result<(String, Vec<u8>), AAuthError> {
+pub fn parse_signature(header: &str) -> Result<(String, Vec<u8>), Error> {
     let parts: Vec<&str> = header.splitn(2, '=').collect();
     if parts.len() != 2 {
-        return Err(AAuthError::InvalidHeader(format!("invalid signature header: {}", header)));
+        return Err(Error::InvalidHeader(format!("invalid signature header: {}", header)));
     }
 
     let label = parts[0].trim().to_string();
@@ -15,7 +15,7 @@ pub fn parse_signature(header: &str) -> Result<(String, Vec<u8>), AAuthError> {
 
     // Remove colons around base64 value
     if !value.starts_with(':') || !value.ends_with(':') {
-        return Err(AAuthError::InvalidHeader(format!("signature value must be wrapped in colons: {}", value)));
+        return Err(Error::InvalidHeader(format!("signature value must be wrapped in colons: {}", value)));
     }
 
     let base64_value = &value[1..value.len() - 1];

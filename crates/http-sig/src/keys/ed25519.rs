@@ -1,7 +1,7 @@
 use ed25519_dalek::{SigningKey, VerifyingKey, Signature, Signer, Verifier};
 use rand::RngCore;
 use crate::encoding::{base64url_decode, base64url_encode};
-use crate::errors::AAuthError;
+use crate::errors::Error;
 
 pub type PrivateKey = SigningKey;
 pub type PublicKey = VerifyingKey;
@@ -34,24 +34,24 @@ pub fn verify(data: &[u8], signature: &[u8], public_key: &PublicKey) -> bool {
 }
 
 /// Create a private key from bytes (base64url encoded)
-pub fn private_key_from_bytes(bytes: &str) -> Result<PrivateKey, AAuthError> {
+pub fn private_key_from_bytes(bytes: &str) -> Result<PrivateKey, Error> {
     let decoded = base64url_decode(bytes)?;
     if decoded.len() != 32 {
-        return Err(AAuthError::InvalidKey(format!("invalid key length: {}", decoded.len())));
+        return Err(Error::InvalidKey(format!("invalid key length: {}", decoded.len())));
     }
     let key_bytes: [u8; 32] = decoded.try_into().unwrap();
     Ok(SigningKey::from_bytes(&key_bytes))
 }
 
 /// Create a public key from bytes (base64url encoded)
-pub fn public_key_from_bytes(bytes: &str) -> Result<PublicKey, AAuthError> {
+pub fn public_key_from_bytes(bytes: &str) -> Result<PublicKey, Error> {
     let decoded = base64url_decode(bytes)?;
     if decoded.len() != 32 {
-        return Err(AAuthError::InvalidKey(format!("invalid key length: {}", decoded.len())));
+        return Err(Error::InvalidKey(format!("invalid key length: {}", decoded.len())));
     }
     let key_bytes: [u8; 32] = decoded.try_into().unwrap();
     VerifyingKey::from_bytes(&key_bytes)
-        .map_err(|e| AAuthError::InvalidKey(format!("invalid public key: {}", e)))
+        .map_err(|e| Error::InvalidKey(format!("invalid public key: {}", e)))
 }
 
 /// Encode public key to base64url

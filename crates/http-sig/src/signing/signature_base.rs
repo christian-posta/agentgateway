@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use crate::headers::signature_input::SignatureParams;
-use crate::errors::AAuthError;
+use crate::errors::Error;
 
 /// Build signature base per RFC 9421 Section 2.5
 /// 
@@ -32,7 +32,7 @@ pub fn build_signature_base(
     headers: &HashMap<String, String>,
     covered_components: &[&str],
     signature_params: &SignatureParams,
-) -> Result<String, AAuthError> {
+) -> Result<String, Error> {
     let mut lines = Vec::new();
 
     for component in covered_components {
@@ -53,7 +53,7 @@ pub fn build_signature_base(
                     }
                 }
                 _ => {
-                    return Err(AAuthError::InvalidHeader(format!("unknown derived component: {}", component)));
+                    return Err(Error::InvalidHeader(format!("unknown derived component: {}", component)));
                 }
             }
         } else {
@@ -64,7 +64,7 @@ pub fn build_signature_base(
                 .find(|(k, _)| k.eq_ignore_ascii_case(component))
                 .map(|(_, v)| v.as_str())
                 .ok_or_else(|| {
-                    AAuthError::InvalidHeader(format!("missing header: {}", component))
+                    Error::InvalidHeader(format!("missing header: {}", component))
                 })?;
 
             // Normalize header value (trim whitespace)

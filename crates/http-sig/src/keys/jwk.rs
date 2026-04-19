@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use crate::errors::AAuthError;
+use crate::errors::Error;
 use crate::keys::ed25519::{PublicKey, public_key_from_bytes};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -27,65 +27,65 @@ pub struct JWK {
 }
 
 impl JWK {
-    pub fn parse(json: &str) -> Result<Self, AAuthError> {
-        serde_json::from_str(json).map_err(AAuthError::from)
+    pub fn parse(json: &str) -> Result<Self, Error> {
+        serde_json::from_str(json).map_err(Error::from)
     }
 
-    pub fn serialize(&self) -> Result<String, AAuthError> {
-        serde_json::to_string(self).map_err(AAuthError::from)
+    pub fn serialize(&self) -> Result<String, Error> {
+        serde_json::to_string(self).map_err(Error::from)
     }
 
     /// Build canonical JSON for thumbprint (only required members, sorted)
-    pub fn canonical_json(&self) -> Result<String, AAuthError> {
+    pub fn canonical_json(&self) -> Result<String, Error> {
         let mut map = serde_json::Map::new();
         
         match self.kty.as_str() {
             "OKP" => {
                 map.insert("crv".to_string(), Value::String(
-                    self.crv.clone().ok_or_else(|| AAuthError::InvalidKey("OKP missing crv".to_string()))?
+                    self.crv.clone().ok_or_else(|| Error::InvalidKey("OKP missing crv".to_string()))?
                 ));
                 map.insert("kty".to_string(), Value::String(self.kty.clone()));
                 map.insert("x".to_string(), Value::String(
-                    self.x.clone().ok_or_else(|| AAuthError::InvalidKey("OKP missing x".to_string()))?
+                    self.x.clone().ok_or_else(|| Error::InvalidKey("OKP missing x".to_string()))?
                 ));
             }
             "EC" => {
                 map.insert("crv".to_string(), Value::String(
-                    self.crv.clone().ok_or_else(|| AAuthError::InvalidKey("EC missing crv".to_string()))?
+                    self.crv.clone().ok_or_else(|| Error::InvalidKey("EC missing crv".to_string()))?
                 ));
                 map.insert("kty".to_string(), Value::String(self.kty.clone()));
                 map.insert("x".to_string(), Value::String(
-                    self.x.clone().ok_or_else(|| AAuthError::InvalidKey("EC missing x".to_string()))?
+                    self.x.clone().ok_or_else(|| Error::InvalidKey("EC missing x".to_string()))?
                 ));
                 map.insert("y".to_string(), Value::String(
-                    self.y.clone().ok_or_else(|| AAuthError::InvalidKey("EC missing y".to_string()))?
+                    self.y.clone().ok_or_else(|| Error::InvalidKey("EC missing y".to_string()))?
                 ));
             }
             "RSA" => {
                 map.insert("e".to_string(), Value::String(
-                    self.e.clone().ok_or_else(|| AAuthError::InvalidKey("RSA missing e".to_string()))?
+                    self.e.clone().ok_or_else(|| Error::InvalidKey("RSA missing e".to_string()))?
                 ));
                 map.insert("kty".to_string(), Value::String(self.kty.clone()));
                 map.insert("n".to_string(), Value::String(
-                    self.n.clone().ok_or_else(|| AAuthError::InvalidKey("RSA missing n".to_string()))?
+                    self.n.clone().ok_or_else(|| Error::InvalidKey("RSA missing n".to_string()))?
                 ));
             }
-            _ => return Err(AAuthError::InvalidKey(format!("unsupported kty: {}", self.kty))),
+            _ => return Err(Error::InvalidKey(format!("unsupported kty: {}", self.kty))),
         }
 
-        serde_json::to_string(&Value::Object(map)).map_err(AAuthError::from)
+        serde_json::to_string(&Value::Object(map)).map_err(Error::from)
     }
 
     /// Convert OKP/Ed25519 JWK to PublicKey
-    pub fn to_ed25519_public_key(&self) -> Result<PublicKey, AAuthError> {
+    pub fn to_ed25519_public_key(&self) -> Result<PublicKey, Error> {
         if self.kty != "OKP" {
-            return Err(AAuthError::InvalidKey(format!("expected OKP, got {}", self.kty)));
+            return Err(Error::InvalidKey(format!("expected OKP, got {}", self.kty)));
         }
-        let crv = self.crv.as_ref().ok_or_else(|| AAuthError::InvalidKey("missing crv".to_string()))?;
+        let crv = self.crv.as_ref().ok_or_else(|| Error::InvalidKey("missing crv".to_string()))?;
         if crv != "Ed25519" {
-            return Err(AAuthError::InvalidKey(format!("expected Ed25519, got {}", crv)));
+            return Err(Error::InvalidKey(format!("expected Ed25519, got {}", crv)));
         }
-        let x = self.x.as_ref().ok_or_else(|| AAuthError::InvalidKey("missing x".to_string()))?;
+        let x = self.x.as_ref().ok_or_else(|| Error::InvalidKey("missing x".to_string()))?;
         public_key_from_bytes(x)
     }
 }

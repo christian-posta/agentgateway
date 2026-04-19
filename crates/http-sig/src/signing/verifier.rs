@@ -1,5 +1,5 @@
 use crate::digest::calculate_content_digest;
-use crate::errors::AAuthError;
+use crate::errors::Error;
 use crate::headers::{SignatureKey, parse_signature, parse_signature_input, parse_signature_key};
 use crate::keys::ed25519::{PublicKey, public_key_from_bytes, verify};
 use crate::signing::signature_base::build_signature_base;
@@ -55,18 +55,18 @@ pub async fn verify_signature(
 	headers: &HashMap<String, String>,
 	_body: Option<&[u8]>,
 	timestamp_tolerance: u64,
-	public_key_resolver: &(dyn Fn(&SignatureKey) -> Result<PublicKey, AAuthError> + Send + Sync),
+	public_key_resolver: &(dyn Fn(&SignatureKey) -> Result<PublicKey, Error> + Send + Sync),
 	authority_override: Option<&str>,
-) -> Result<VerificationResult, AAuthError> {
+) -> Result<VerificationResult, Error> {
 	// 1-3. Extract and parse headers (case-insensitive: proxy may send lowercase keys)
 	let sig_key_header = get_header(headers, "Signature-Key")
         .ok_or_else(|| {
             tracing::debug!(header_keys = ?headers.keys().collect::<Vec<_>>(), "signature verification: missing Signature-Key header");
-            AAuthError::MissingSignatureKey
+            Error::MissingSignatureKey
         })?;
 	let sig_input_header =
-		get_header(headers, "Signature-Input").ok_or(AAuthError::MissingSignatureInput)?;
-	let sig_header = get_header(headers, "Signature").ok_or(AAuthError::MissingSignature)?;
+		get_header(headers, "Signature-Input").ok_or(Error::MissingSignatureInput)?;
+	let sig_header = get_header(headers, "Signature").ok_or(Error::MissingSignature)?;
 
 	tracing::debug!(
 		signature_key = sig_key_header.as_str(),
@@ -82,7 +82,7 @@ pub async fn verify_signature(
 	// 4. Verify label consistency
 	if sig_key.label != sig_input.label || sig_key.label != sig_label {
 		tracing::debug!(sig_key_label = %sig_key.label, sig_input_label = %sig_input.label, sig_label = %sig_label, "label mismatch");
-		return Err(AAuthError::LabelMismatch);
+		return Err(Error::LabelMismatch);
 	}
 
 	// 5. Verify timestamp
@@ -103,7 +103,7 @@ pub async fn verify_signature(
 			tolerance = timestamp_tolerance,
 			"signature timestamp outside tolerance"
 		);
-		return Err(AAuthError::TimestampExpired);
+		return Err(Error::TimestampExpired);
 	}
 
 	// 6. Verify required components are covered
@@ -114,7 +114,7 @@ pub async fn verify_signature(
 				missing_component = req_comp,
 				"required component missing from signature base"
 			);
-			return Err(AAuthError::InvalidSignature(format!(
+			return Err(Error::InvalidSignature(format!(
 				"missing required component: {}",
 				req_comp
 			)));
@@ -124,7 +124,7 @@ pub async fn verify_signature(
 	if headers.contains_key("content-digest") {
 		if !sig_input.components.iter().any(|c| c == "content-digest") {
 			tracing::debug!("request has content-digest but it is not covered");
-			return Err(AAuthError::InvalidSignature(
+			return Err(Error::InvalidSignature(
 				"missing content-digest in covered components".to_string(),
 			));
 		}
@@ -133,7 +133,7 @@ pub async fn verify_signature(
 	if headers.contains_key("authorization") {
 		if !sig_input.components.iter().any(|c| c == "authorization") {
 			tracing::debug!("request has authorization header but it is not covered");
-			return Err(AAuthError::InvalidSignature(
+			return Err(Error::InvalidSignature(
 				"missing authorization in covered components".to_string(),
 			));
 		}
@@ -149,7 +149,7 @@ pub async fn verify_signature(
 		"hwk" => SignatureScheme::Hwk,
 		"jwks_uri" => SignatureScheme::Jwks,
 		"jwt" => SignatureScheme::Jwt,
-		s => return Err(AAuthError::UnsupportedScheme(s.to_string())),
+		s => return Err(Error::UnsupportedScheme(s.to_string())),
 	};
 
 	// Parse URL to extract authority, path, query
@@ -159,7 +159,7 @@ pub async fn verify_signature(
 	} else {
 		let host = parsed_url
 			.host_str()
-			.ok_or_else(|| AAuthError::InvalidHeader("missing host in URL".to_string()))?;
+			.ok_or_else(|| Error::InvalidHeader("missing host in URL".to_string()))?;
 		let port = parsed_url.port();
 		format!(
 			"{}{}",
@@ -199,7 +199,7 @@ pub async fn verify_signature(
 			expected_sig_len = 64,
 			"Ed25519 signature verification failed: signature invalid"
 		);
-		return Err(AAuthError::InvalidSignature(
+		return Err(Error::InvalidSignature(
 			"signature verification failed".to_string(),
 		));
 	}
@@ -209,7 +209,7 @@ pub async fn verify_signature(
 	if let Some(body_bytes) = _body {
 		if sig_input.components.iter().any(|c| c == "content-digest") {
 			let cd_header = get_header(headers, "content-digest")
-				.ok_or_else(|| AAuthError::InvalidSignature("content-digest in covered components but header missing".to_string()))?;
+				.ok_or_else(|| Error::InvalidSignature("content-digest in covered components but header missing".to_string()))?;
 			// Try sha-256 first, then sha-512
 			let expected = if cd_header.contains("sha-256") {
 				calculate_content_digest(body_bytes, "sha-256")
@@ -217,7 +217,7 @@ pub async fn verify_signature(
 				calculate_content_digest(body_bytes, "sha-512")
 			};
 			if cd_header.as_str() != expected {
-				return Err(AAuthError::ContentDigestMismatch);
+				return Err(Error::ContentDigestMismatch);
 			}
 		}
 	}
@@ -243,15 +243,15 @@ pub async fn verify_signature(
 }
 
 /// Resolve public key from Signature-Key header for hwk scheme
-pub fn resolve_hwk_public_key(sig_key: &SignatureKey) -> Result<PublicKey, AAuthError> {
+pub fn resolve_hwk_public_key(sig_key: &SignatureKey) -> Result<PublicKey, Error> {
 	if sig_key.scheme != "hwk" {
-		return Err(AAuthError::UnsupportedScheme(sig_key.scheme.clone()));
+		return Err(Error::UnsupportedScheme(sig_key.scheme.clone()));
 	}
 
 	let x = sig_key
 		.params
 		.get("x")
-		.ok_or_else(|| AAuthError::InvalidKey("missing x parameter".to_string()))?;
+		.ok_or_else(|| Error::InvalidKey("missing x parameter".to_string()))?;
 
 	public_key_from_bytes(x)
 }

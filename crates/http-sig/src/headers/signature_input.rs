@@ -1,4 +1,4 @@
-use crate::errors::AAuthError;
+use crate::errors::Error;
 
 #[derive(Debug, Clone)]
 pub struct SignatureInput {
@@ -17,11 +17,11 @@ pub struct SignatureParams {
 
 /// Parse Signature-Input header
 /// Format: label=("comp1" "comp2" "comp3");created=1234567890;keyid="key-1"
-pub fn parse_signature_input(header: &str) -> Result<SignatureInput, AAuthError> {
+pub fn parse_signature_input(header: &str) -> Result<SignatureInput, Error> {
     // Split label from params
     let parts: Vec<&str> = header.splitn(2, '=').collect();
     if parts.len() != 2 {
-        return Err(AAuthError::InvalidHeader(format!("invalid signature-input header: {}", header)));
+        return Err(Error::InvalidHeader(format!("invalid signature-input header: {}", header)));
     }
 
     let label = parts[0].trim().to_string();
@@ -29,10 +29,10 @@ pub fn parse_signature_input(header: &str) -> Result<SignatureInput, AAuthError>
 
     // Extract components (in parentheses)
     let components_start = rest.find('(').ok_or_else(|| {
-        AAuthError::InvalidHeader("missing components list".to_string())
+        Error::InvalidHeader("missing components list".to_string())
     })?;
     let components_end = rest[components_start..].find(')').ok_or_else(|| {
-        AAuthError::InvalidHeader("unclosed components list".to_string())
+        Error::InvalidHeader("unclosed components list".to_string())
     })? + components_start;
 
     let components_str = &rest[components_start + 1..components_end];
@@ -58,7 +58,7 @@ pub fn parse_signature_input(header: &str) -> Result<SignatureInput, AAuthError>
 
         if let Some(created_str) = param.strip_prefix("created=") {
             params.created = created_str.parse().map_err(|_| {
-                AAuthError::InvalidHeader(format!("invalid created timestamp: {}", created_str))
+                Error::InvalidHeader(format!("invalid created timestamp: {}", created_str))
             })?;
         } else if let Some(keyid_str) = param.strip_prefix("keyid=") {
             params.keyid = Some(keyid_str.trim_matches('"').to_string());

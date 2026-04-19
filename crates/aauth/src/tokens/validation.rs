@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::errors::AAuthError;
-use crate::keys::jwk::JWK;
+use http_sig::keys::jwk::JWK;
 
 /// Whether `iss` is allowed for JWT validation per AAuth spec.
 ///

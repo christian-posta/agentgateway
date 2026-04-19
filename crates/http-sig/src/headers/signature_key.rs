@@ -1,4 +1,4 @@
-use crate::errors::AAuthError;
+use crate::errors::Error;
 use crate::keys::jwk::JWK;
 use std::collections::HashMap;
 
@@ -15,11 +15,11 @@ pub struct SignatureKey {
 ///   label=(scheme=jwks_uri id="https://agent.example" kid="key-1")
 ///   label=(scheme=jwt jwt="eyJ...")
 ///   label=scheme;param1=val1;param2=val2
-pub fn parse_signature_key(header: &str) -> Result<SignatureKey, AAuthError> {
+pub fn parse_signature_key(header: &str) -> Result<SignatureKey, Error> {
 	// Extract label (everything before '=')
 	let parts: Vec<&str> = header.splitn(2, '=').collect();
 	if parts.len() != 2 {
-		return Err(AAuthError::InvalidHeader(format!(
+		return Err(Error::InvalidHeader(format!(
 			"invalid signature-key header: {}",
 			header
 		)));
@@ -38,7 +38,7 @@ pub fn parse_signature_key(header: &str) -> Result<SignatureKey, AAuthError> {
 	}
 }
 
-fn parse_parenthesized_format(label: String, inner: &str) -> Result<SignatureKey, AAuthError> {
+fn parse_parenthesized_format(label: String, inner: &str) -> Result<SignatureKey, Error> {
 	let mut scheme = String::new();
 	let mut params = HashMap::new();
 
@@ -70,7 +70,7 @@ fn parse_parenthesized_format(label: String, inner: &str) -> Result<SignatureKey
 		if part.contains('=') {
 			let kv: Vec<&str> = part.splitn(2, '=').collect();
 			if kv.len() != 2 {
-				return Err(AAuthError::InvalidHeader(format!(
+				return Err(Error::InvalidHeader(format!(
 					"invalid param format: {}",
 					part
 				)));
@@ -93,7 +93,7 @@ fn parse_parenthesized_format(label: String, inner: &str) -> Result<SignatureKey
 					.trim_matches('"')
 					.to_string();
 			} else {
-				return Err(AAuthError::InvalidHeader(format!(
+				return Err(Error::InvalidHeader(format!(
 					"missing scheme: {}",
 					part
 				)));
@@ -102,7 +102,7 @@ fn parse_parenthesized_format(label: String, inner: &str) -> Result<SignatureKey
 	}
 
 	if scheme.is_empty() {
-		return Err(AAuthError::InvalidHeader("missing scheme".to_string()));
+		return Err(Error::InvalidHeader("missing scheme".to_string()));
 	}
 
 	Ok(SignatureKey {
@@ -112,10 +112,10 @@ fn parse_parenthesized_format(label: String, inner: &str) -> Result<SignatureKey
 	})
 }
 
-fn parse_semicolon_format(label: String, value: &str) -> Result<SignatureKey, AAuthError> {
+fn parse_semicolon_format(label: String, value: &str) -> Result<SignatureKey, Error> {
 	let parts: Vec<&str> = value.split(';').collect();
 	if parts.is_empty() {
-		return Err(AAuthError::InvalidHeader("empty value".to_string()));
+		return Err(Error::InvalidHeader("empty value".to_string()));
 	}
 
 	let scheme = parts[0].trim().to_string();
@@ -140,7 +140,7 @@ fn parse_semicolon_format(label: String, value: &str) -> Result<SignatureKey, AA
 /// Build Signature-Key header for hwk scheme (RFC 8941 Structured Fields format)
 ///
 /// Output: `sig1=hwk;kty="OKP";crv="Ed25519";x="..."`
-pub fn build_signature_key_hwk(label: &str, jwk: &JWK) -> Result<String, AAuthError> {
+pub fn build_signature_key_hwk(label: &str, jwk: &JWK) -> Result<String, Error> {
 	let mut parts = vec!["hwk".to_string()];
 
 	parts.push(format!("kty=\"{}\"", jwk.kty));

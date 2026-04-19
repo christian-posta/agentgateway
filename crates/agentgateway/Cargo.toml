@@ -20,6 +20,7 @@ testing = ["dep:reqwest"]
 [dependencies]
 a2a-sdk.workspace = true
 aauth = { path = "../aauth" }
+http-sig = { path = "../http-sig" }
 agent-core.workspace = true
 agent-celx.workspace = true
 agent-hbone.workspace = true

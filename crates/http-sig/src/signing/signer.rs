@@ -1,5 +1,5 @@
 use crate::digest::calculate_content_digest;
-use crate::errors::AAuthError;
+use crate::errors::Error;
 use crate::headers::{
 	SignatureParams, build_signature, build_signature_input, build_signature_key_hwk,
 	build_signature_key_jwks, build_signature_key_jwt,
@@ -40,12 +40,12 @@ pub async fn sign_request(
 	private_key: &PrivateKey,
 	scheme: &str,
 	scheme_params: &HashMap<String, String>,
-) -> Result<SignatureHeaders, AAuthError> {
+) -> Result<SignatureHeaders, Error> {
 	// 1. Parse URL
 	let parsed_url = url::Url::parse(url)?;
 	let authority = parsed_url
 		.host_str()
-		.ok_or_else(|| AAuthError::InvalidHeader("missing host in URL".to_string()))?;
+		.ok_or_else(|| Error::InvalidHeader("missing host in URL".to_string()))?;
 	let path = parsed_url.path();
 	let query = parsed_url.query();
 
@@ -72,10 +72,10 @@ pub async fn sign_request(
 		"jwks_uri" => {
 			let id = scheme_params
 				.get("id")
-				.ok_or_else(|| AAuthError::InvalidHeader("missing id for jwks_uri scheme".to_string()))?;
+				.ok_or_else(|| Error::InvalidHeader("missing id for jwks_uri scheme".to_string()))?;
 			let kid = scheme_params
 				.get("kid")
-				.ok_or_else(|| AAuthError::InvalidHeader("missing kid for jwks_uri scheme".to_string()))?;
+				.ok_or_else(|| Error::InvalidHeader("missing kid for jwks_uri scheme".to_string()))?;
 			let dwk = scheme_params
 				.get("dwk")
 				.map(|s| s.as_str())
@@ -85,10 +85,10 @@ pub async fn sign_request(
 		"jwt" => {
 			let jwt = scheme_params
 				.get("jwt")
-				.ok_or_else(|| AAuthError::InvalidHeader("missing jwt for jwt scheme".to_string()))?;
+				.ok_or_else(|| Error::InvalidHeader("missing jwt for jwt scheme".to_string()))?;
 			build_signature_key_jwt(label, jwt)
 		},
-		_ => return Err(AAuthError::UnsupportedScheme(scheme.to_string())),
+		_ => return Err(Error::UnsupportedScheme(scheme.to_string())),
 	};
 
 	headers.insert("Signature-Key".to_string(), signature_key.clone());

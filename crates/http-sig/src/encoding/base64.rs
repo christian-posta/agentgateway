@@ -1,4 +1,4 @@
-use crate::errors::AAuthError;
+use crate::errors::Error;
 
 use base64::{Engine, engine::general_purpose};
 
@@ -8,10 +8,10 @@ pub fn base64_encode(bytes: &[u8]) -> String {
 }
 
 /// Standard Base64 decoding (RFC 4648) with padding
-pub fn base64_decode(s: &str) -> Result<Vec<u8>, AAuthError> {
+pub fn base64_decode(s: &str) -> Result<Vec<u8>, Error> {
     general_purpose::STANDARD
         .decode(s)
-        .map_err(AAuthError::from)
+        .map_err(Error::from)
 }
 
 /// Base64URL encoding without padding (for JWK values)
@@ -20,10 +20,10 @@ pub fn base64url_encode(bytes: &[u8]) -> String {
 }
 
 /// Base64URL decoding (handles missing padding)
-pub fn base64url_decode(s: &str) -> Result<Vec<u8>, AAuthError> {
+pub fn base64url_decode(s: &str) -> Result<Vec<u8>, Error> {
     general_purpose::URL_SAFE_NO_PAD
         .decode(s)
-        .map_err(AAuthError::from)
+        .map_err(Error::from)
 }
 
 #[cfg(test)]
